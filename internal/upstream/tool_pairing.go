@@ -122,102 +122,152 @@ func cleanupOrphanToolCalls(messages []any) ([]any, bool) {
 	if len(messages) == 0 {
 		return messages, false
 	}
-	callIDs := map[string]bool{}
-	resultIDs := map[string]bool{}
-	hasTraffic := false
-	for _, m := range messages {
-		msg, ok := m.(map[string]any)
+	// 普通的 role:tool 文本（没有 tool_call_id，且请求中没有 assistant.tool_calls）
+	// 可能只是客户端自定义消息；没有工具配对流量时保持原样，避免把未知 role 当成
+	// 网关错误。只要出现任一带 ID 的工具调用/结果，才进入严格配对清理。
+	hasPairTraffic := false
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
 		if !ok {
 			continue
 		}
-		switch msg["role"] {
-		case "tool":
-			if id, ok := msg["tool_call_id"].(string); ok && id != "" {
-				resultIDs[id] = true
-				hasTraffic = true
+		if role, _ := msg["role"].(string); role == "assistant" {
+			if tcs, ok := msg["tool_calls"].([]any); ok && len(tcs) > 0 {
+				hasPairTraffic = true
+				break
 			}
-		case "assistant":
-			if tcs, ok := msg["tool_calls"].([]any); ok {
-				for _, tci := range tcs {
-					tc, ok := tci.(map[string]any)
-					if !ok {
-						continue
-					}
-					if id, ok := tc["id"].(string); ok && id != "" {
-						callIDs[id] = true
-						hasTraffic = true
-					}
-				}
-			}
-		}
-	}
-	if !hasTraffic {
-		return messages, false
-	}
-	// keepCalls：调用 id 是否双侧齐全（调用存在且结果存在）。重复 id 与乱序均按集合处理。
-	keepCalls := map[string]bool{}
-	for id := range callIDs {
-		if resultIDs[id] {
-			keepCalls[id] = true
-		}
-	}
-	changed := false
-	// 1) assistant.tool_calls：按 keepCalls 对称裁剪——只留有结果的调用，过滤后为空则删键。
-	//
-	// 历史实现是「批内每个 id 都齐才整批保留，否则删掉整个 tool_calls 键」。那会留下
-	// 无主结果：批 [c1,c2] 只回了 c1 时，调用侧整批被删，而 tool{c1} 仍按 id 命中
-	// keepCalls 得以保留 —— 出站载荷于是变成「无 tool_calls 的 assistant + 孤儿 tool」，
-	// 上游判 11148（tool calls and tool results do not match）并顶死整条会话。
-	// 现在两侧共用同一份 keepCalls 按 id 对称裁剪（与 2) 的删除侧同口径），
-	// 任何输入都不会再产生半截配对。
-	for _, m := range messages {
-		msg, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		if role, _ := msg["role"].(string); role != "assistant" {
-			continue
-		}
-		tcs, ok := msg["tool_calls"].([]any)
-		if !ok || len(tcs) == 0 {
-			continue
-		}
-		keptCalls := make([]any, 0, len(tcs))
-		for _, tci := range tcs {
-			tc, ok := tci.(map[string]any)
-			if !ok {
-				continue
-			}
-			if id, _ := tc["id"].(string); keepCalls[id] {
-				keptCalls = append(keptCalls, tc)
-			}
-		}
-		if len(keptCalls) == len(tcs) {
-			continue // 整批齐全：零改动
-		}
-		changed = true
-		if len(keptCalls) == 0 {
-			delete(msg, "tool_calls")
-			continue
-		}
-		msg["tool_calls"] = keptCalls
-	}
-	// 2) role:tool 结果：只有对应 tool_call 被保留才保留；孤儿结果整条删除。
-	kept := make([]any, 0, len(messages))
-	for _, m := range messages {
-		msg, ok := m.(map[string]any)
-		if !ok {
-			kept = append(kept, m)
-			continue
 		}
 		if role, _ := msg["role"].(string); role == "tool" {
-			id, _ := msg["tool_call_id"].(string)
-			if !keepCalls[id] {
+			if id, _ := msg["tool_call_id"].(string); id != "" {
+				hasPairTraffic = true
+				break
+			}
+		}
+	}
+	if !hasPairTraffic {
+		return messages, false
+	}
+	changed := false
+	kept := make([]any, 0, len(messages))
+	for i := 0; i < len(messages); {
+		msg, ok := messages[i].(map[string]any)
+		if !ok {
+			kept = append(kept, messages[i])
+			i++
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "assistant" {
+			if role == "tool" {
+				// 结果只能在其所属 assistant.tool_calls 之后出现；任何游离结果
+				// 都会触发上游 11148，直接丢弃。
+				changed = true
+				i++
+				continue
+			}
+			kept = append(kept, messages[i])
+			i++
+			continue
+		}
+
+		tcs, hasCalls := msg["tool_calls"].([]any)
+		if !hasCalls || len(tcs) == 0 {
+			kept = append(kept, messages[i])
+			i++
+			continue
+		}
+
+		// 以当前 assistant 为边界按顺序配对，不能再用全局 ID 集合：全局集合会
+		// 把「先出现的孤儿结果」或「后续批次的同 ID 结果」错误地认成合法配对。
+		calls := make([]any, 0, len(tcs))
+		callIDs := map[string]bool{}
+		for _, rawCall := range tcs {
+			call, ok := rawCall.(map[string]any)
+			id, valid := "", false
+			if ok {
+				id, valid = call["id"].(string)
+				valid = valid && id != ""
+			}
+			if !valid || callIDs[id] {
 				changed = true
 				continue
 			}
+			callIDs[id] = true
+			calls = append(calls, call)
 		}
-		kept = append(kept, m)
+
+		j := i + 1
+		results := make([]any, 0, len(calls))
+		resultIDs := map[string]bool{}
+		between := make([]any, 0)
+		for j < len(messages) {
+			next, ok := messages[j].(map[string]any)
+			if !ok {
+				break
+			}
+			nextRole, _ := next["role"].(string)
+			if nextRole == "tool" {
+				id, _ := next["tool_call_id"].(string)
+				if !callIDs[id] {
+					break
+				}
+				// 同一 call 的第二个结果也是坏历史；消费并丢弃，避免它
+				// 留在输出中继续触发 11148。
+				if resultIDs[id] {
+					changed = true
+					j++
+					continue
+				}
+				resultIDs[id] = true
+				results = append(results, messages[j])
+				j++
+				continue
+			}
+			// system/developer 是已知的流间噪声，可在结果块内外暂存到末尾；
+			// user/assistant 则意味着本批配对已经断开，不能跨轮搬运。
+			if nextRole == "system" || nextRole == "developer" {
+				between = append(between, messages[j])
+				j++
+				continue
+			}
+			break
+		}
+
+		if len(results) == 0 {
+			delete(msg, "tool_calls")
+			changed = true
+			kept = append(kept, msg)
+			kept = append(kept, between...)
+			if len(between) > 0 {
+				i = j
+			} else {
+				i++
+			}
+			continue
+		}
+		keptCalls := make([]any, 0, len(calls))
+		for _, call := range calls {
+			id := call.(map[string]any)["id"].(string)
+			if resultIDs[id] {
+				keptCalls = append(keptCalls, call)
+			}
+		}
+		if len(keptCalls) != len(tcs) || len(keptCalls) != len(calls) {
+			changed = true
+		}
+		if len(keptCalls) == 0 {
+			delete(msg, "tool_calls")
+			changed = true
+		} else {
+			msg["tool_calls"] = keptCalls
+		}
+		kept = append(kept, msg)
+		kept = append(kept, results...)
+		if len(between) > 0 {
+			changed = true
+			kept = append(kept, between...)
+		}
+		i = j
 	}
 	if !changed {
 		return messages, false
