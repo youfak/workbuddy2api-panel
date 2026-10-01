@@ -65,16 +65,20 @@ func TestWebUIUsesSessionAndAPIKeyManager(t *testing.T) {
 	p := newTestPanel()
 	page := httptest.NewRecorder()
 	p.ServeHTTP(page, httptest.NewRequest("GET", "/panel/", nil))
-	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) || !strings.Contains(page.Body.String(), `id="btnAIKeys"`) || !strings.Contains(page.Body.String(), `data-view="keys"`) {
-		t.Fatal("WebUI is missing a direct AI key management menu")
+	body := page.Body.String()
+	if !strings.Contains(body, `id="btnNewAIKey"`) || !strings.Contains(body, `data-view="keys"`) {
+		t.Fatal("WebUI is missing the AI key management menu")
+	}
+	if strings.Contains(body, `id="btnAIKeys"`) {
+		t.Fatal("WebUI must not render a redundant top-level AI key button")
 	}
 	script := httptest.NewRecorder()
 	p.ServeHTTP(script, httptest.NewRequest("GET", "/panel/app.js", nil))
-	body := script.Body.String()
-	if !strings.Contains(body, "api-keys") || !strings.Contains(body, "credentials: 'same-origin'") {
+	scriptBody := script.Body.String()
+	if !strings.Contains(scriptBody, "api-keys") || !strings.Contains(scriptBody, "credentials: 'same-origin'") {
 		t.Fatal("WebUI does not use session-based API key management")
 	}
-	if strings.Contains(body, "wb2api.key") || strings.Contains(body, "Authorization") {
+	if strings.Contains(scriptBody, "wb2api.key") || strings.Contains(scriptBody, "Authorization") {
 		t.Fatal("WebUI must not persist or send AI keys for panel authentication")
 	}
 }

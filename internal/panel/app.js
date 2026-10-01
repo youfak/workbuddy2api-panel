@@ -709,11 +709,6 @@ function closeAIKeyDialog() {
   $('apiKeyVeil').classList.remove('on');
 }
 $('btnNewAIKey').onclick = openAIKeyDialog;
-$('btnAIKeys').onclick = () => {
-  go('keys');
-  history.replaceState(null, '', '#keys');
-  setTimeout(openAIKeyDialog, 0);
-};
 $('btnCloseAIKey').onclick = closeAIKeyDialog;
 $('btnCreateAIKey').onclick = async () => {
   const name = $('aiKeyName').value.trim();
