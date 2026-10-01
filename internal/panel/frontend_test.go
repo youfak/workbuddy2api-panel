@@ -81,6 +81,12 @@ func TestWebUIUsesSessionAndAPIKeyManager(t *testing.T) {
 	if strings.Contains(scriptBody, "wb2api.key") || strings.Contains(scriptBody, "Authorization") {
 		t.Fatal("WebUI must not persist or send AI keys for panel authentication")
 	}
+	if !strings.Contains(scriptBody, "execCommand('copy')") {
+		t.Fatal("WebUI must provide a non-Clipboard-API copy fallback")
+	}
+	if !strings.Contains(scriptBody, "copyText(createdAIKey)") {
+		t.Fatal("AI key copy must use the non-Clipboard-API fallback")
+	}
 }
 
 // TestAppJSTopLevelSmoke app.js 顶层求值冒烟（v1.11.3/1.11.4 两连炸后补的运行时闸门）：

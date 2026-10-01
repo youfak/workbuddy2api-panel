@@ -728,7 +728,7 @@ $('btnCreateAIKey').onclick = async () => {
     $('aiKeyErr').hidden = false;
   } finally { btn.disabled = false; }
 };
-$('btnCopyAIKey').onclick = () => navigator.clipboard.writeText(createdAIKey)
+$('btnCopyAIKey').onclick = () => copyText(createdAIKey)
   .then(() => toast('AI 密钥已复制', 'ok'), () => toast('复制失败，请手动复制', 'err'));
 $('aiKeyName').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnCreateAIKey').click(); });
 
