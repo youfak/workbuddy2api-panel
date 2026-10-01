@@ -128,6 +128,69 @@ func (p *Panel) authLogin(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
+type changePasswordRequest struct {
+	OldPassword string `json:"oldPassword"`
+	NewPassword string `json:"newPassword"`
+}
+
+func (p *Panel) authChangePassword(w http.ResponseWriter, r *http.Request) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, "read password: "+err.Error())
+		return
+	}
+	var req changePasswordRequest
+	if err := json.Unmarshal(raw, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "parse password: "+err.Error())
+		return
+	}
+	if err := validatePanelPassword(req.NewPassword); err != nil {
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	p.configMu.Lock()
+	defer p.configMu.Unlock()
+
+	p.authMu.Lock()
+	hash := p.panelPasswordHash
+	p.authMu.Unlock()
+
+	if hash == "" {
+		writeErr(w, http.StatusConflict, "panel_setup_required")
+		return
+	}
+	if !verifyPanelPassword(req.OldPassword, hash) {
+		writeErr(w, http.StatusUnauthorized, "当前管理密码错误")
+		return
+	}
+	if p.cfg.SavePanelPassword == nil {
+		writeErr(w, http.StatusNotImplemented, "panel password change is not available")
+		return
+	}
+
+	newHash, err := hashPanelPassword(req.NewPassword)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "hash panel password: "+err.Error())
+		return
+	}
+	if err := p.cfg.SavePanelPassword(newHash); err != nil {
+		writeErr(w, http.StatusInternalServerError, "save panel password: "+err.Error())
+		return
+	}
+
+	p.authMu.Lock()
+	p.panelPasswordHash = newHash
+	p.sessions = map[string]panelSession{}
+	p.authMu.Unlock()
+
+	if err := p.createSession(w, r); err != nil {
+		writeErr(w, http.StatusInternalServerError, "create panel session: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (p *Panel) authLogout(w http.ResponseWriter, r *http.Request) {
 	// 面板当前只有一个管理员密码，退出时清掉全部内存会话，确保任何已发出的
 	// Cookie 都不能继续访问管理接口。

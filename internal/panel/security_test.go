@@ -149,7 +149,7 @@ func TestAuthLayerBehavior(t *testing.T) {
 }
 
 func TestPanelSessionRejectsAPIKeyAndExpiresOnLogout(t *testing.T) {
-	var savedHash string
+	var savedHash string; _ = savedHash
 	p := New(Config{
 		SavePanelPassword: func(hash string) error {
 			savedHash = hash
@@ -286,5 +286,89 @@ func TestConfigResponseDoesNotExposeKeyHashes(t *testing.T) {
 	p.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "secret-hash") || strings.Contains(rec.Body.String(), "secret-password-hash") {
 		t.Fatalf("config response leaked secret: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuthChangePassword(t *testing.T) {
+	var savedHash string
+	_ = savedHash
+	p := New(Config{
+		SavePanelPassword: func(hash string) error {
+			savedHash = hash
+			return nil
+		},
+	})
+
+	// 1. 初始化密码
+	setup := httptest.NewRequest(http.MethodPost, "/panel/api/auth/setup", bytes.NewBufferString(`{"password":"initial-password-123"}`))
+	setupResult := httptest.NewRecorder()
+	p.ServeHTTP(setupResult, setup)
+	if setupResult.Code != http.StatusOK {
+		t.Fatalf("setup failed: %d %s", setupResult.Code, setupResult.Body.String())
+	}
+	cookie := setupResult.Result().Cookies()[0]
+
+	// 2. 未登录修改密码 -> 401
+	unauthReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/password", bytes.NewBufferString(`{"oldPassword":"initial-password-123","newPassword":"new-password-456"}`))
+	unauthRec := httptest.NewRecorder()
+	p.ServeHTTP(unauthRec, unauthReq)
+	if unauthRec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauth want 401, got %d", unauthRec.Code)
+	}
+
+	// 3. 旧密码错误 -> 401
+	wrongOldReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/password", bytes.NewBufferString(`{"oldPassword":"wrong-password-999","newPassword":"new-password-456"}`))
+	wrongOldReq.AddCookie(cookie)
+	wrongOldRec := httptest.NewRecorder()
+	p.ServeHTTP(wrongOldRec, wrongOldReq)
+	if wrongOldRec.Code != http.StatusUnauthorized || !strings.Contains(wrongOldRec.Body.String(), "当前管理密码错误") {
+		t.Fatalf("wrong old password want 401 error, got %d: %s", wrongOldRec.Code, wrongOldRec.Body.String())
+	}
+
+	// 4. 新密码过短 -> 400
+	shortReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/password", bytes.NewBufferString(`{"oldPassword":"initial-password-123","newPassword":"short"}`))
+	shortReq.AddCookie(cookie)
+	shortRec := httptest.NewRecorder()
+	p.ServeHTTP(shortRec, shortReq)
+	if shortRec.Code != http.StatusBadRequest {
+		t.Fatalf("short new password want 400, got %d", shortRec.Code)
+	}
+
+	// 5. 成功修改密码 -> 200，并签发新会话 Cookie
+	okReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/password", bytes.NewBufferString(`{"oldPassword":"initial-password-123","newPassword":"new-password-456"}`))
+	okReq.AddCookie(cookie)
+	okRec := httptest.NewRecorder()
+	p.ServeHTTP(okRec, okReq)
+	if okRec.Code != http.StatusOK {
+		t.Fatalf("change password failed: %d %s", okRec.Code, okRec.Body.String())
+	}
+	newCookies := okRec.Result().Cookies()
+	if len(newCookies) != 1 {
+		t.Fatalf("expected new session cookie on change password")
+	}
+
+	// 6. 使用新 Cookie 能够正常访问
+	cfgReq := httptest.NewRequest(http.MethodGet, "/panel/api/config", nil)
+	cfgReq.AddCookie(newCookies[0])
+	cfgRec := httptest.NewRecorder()
+	p.ServeHTTP(cfgRec, cfgReq)
+	if cfgRec.Code == http.StatusUnauthorized {
+		t.Fatalf("new session cookie was rejected")
+	}
+
+	// 7. 使用新密码能够正常登录
+	loginReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/login", bytes.NewBufferString(`{"password":"new-password-456"}`))
+	loginRec := httptest.NewRecorder()
+	p.ServeHTTP(loginRec, loginReq)
+	if loginRec.Code != http.StatusOK {
+		t.Fatalf("login with new password failed: %d %s", loginRec.Code, loginRec.Body.String())
+	}
+
+	// 8. 使用旧密码不能再登录
+	oldLoginReq := httptest.NewRequest(http.MethodPost, "/panel/api/auth/login", bytes.NewBufferString(`{"password":"initial-password-123"}`))
+	oldLoginRec := httptest.NewRecorder()
+	p.ServeHTTP(oldLoginRec, oldLoginReq)
+	if oldLoginRec.Code != http.StatusUnauthorized {
+		t.Fatalf("login with old password should fail, got: %d", oldLoginRec.Code)
 	}
 }

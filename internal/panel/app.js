@@ -1853,11 +1853,11 @@ if ($('usWindow')) $('usWindow').onchange = loadUsage;
    完全一致的账号，余额可能差上千——差别只在包里。这里把逐包明细摊开，并给每个
    包名一个稳定配色，跨账号对比时同色即同类。 */
 
-const PK_COLORS = ['#4f8cff', '#25b08b', '#e8a33d', '#c96bd6', '#e2607a',
+const PK_COLORS = ['#4f8cff', '#25b08b', '#e8a33d', '#06b6d4', '#e2607a',
                    '#5aa9e6', '#8fbf3f', '#b58b5a', '#7d8fa8', '#d4785c'];
-const PK_ACCOUNT_COLORS = ['#4f8cff', '#25b08b', '#e8a33d', '#c96bd6',
+const PK_ACCOUNT_COLORS = ['#4f8cff', '#25b08b', '#e8a33d', '#06b6d4',
                            '#e2607a', '#20a4a4', '#8fbf3f', '#d4785c',
-                           '#7c83db', '#c48a2f', '#b45f8c', '#5aa9e6'];
+                           '#2563eb', '#c48a2f', '#e11d48', '#5aa9e6'];
 
 function pkColor(i) { return PK_COLORS[i % PK_COLORS.length]; }
 
@@ -2242,3 +2242,54 @@ async function loadPackages() {
 }
 
 if ($('btnPk')) $('btnPk').onclick = loadPackages;
+
+/* ── 修改管理密码 ─────────────────────────────────────────────────── */
+if ($('btnOpenChangePwd')) $('btnOpenChangePwd').onclick = () => {
+  $('oldPwdInput').value = '';
+  $('newPwdInput').value = '';
+  $('confirmNewPwdInput').value = '';
+  $('changePwdErr').hidden = true;
+  $('changePwdVeil').classList.add('on');
+  setTimeout(() => $('oldPwdInput').focus(), 60);
+};
+if ($('btnCloseChangePwd')) $('btnCloseChangePwd').onclick = () => {
+  $('changePwdVeil').classList.remove('on');
+};
+if ($('btnSubmitChangePwd')) $('btnSubmitChangePwd').onclick = async () => {
+  const oldPassword = $('oldPwdInput').value;
+  const newPassword = $('newPwdInput').value;
+  const confirmPassword = $('confirmNewPwdInput').value;
+  if (!oldPassword) {
+    $('changePwdErr').textContent = '请输入当前管理密码。';
+    $('changePwdErr').hidden = false;
+    return;
+  }
+  if (!newPassword || newPassword.length < 12 || newPassword.length > 256) {
+    $('changePwdErr').textContent = '新管理密码长度必须为至少 12 个字符且不超过 256 个字符。';
+    $('changePwdErr').hidden = false;
+    return;
+  }
+  if (newPassword !== confirmPassword) {
+    $('changePwdErr').textContent = '两次输入的新密码不一致。';
+    $('changePwdErr').hidden = false;
+    return;
+  }
+  const btn = $('btnSubmitChangePwd');
+  btn.disabled = true;
+  try {
+    const r = await fetch('/panel/api/auth/password', {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword, newPassword }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    $('changePwdVeil').classList.remove('on');
+    toast('管理密码修改成功');
+  } catch (e) {
+    $('changePwdErr').textContent = '修改失败：' + e.message;
+    $('changePwdErr').hidden = false;
+  } finally { btn.disabled = false; }
+};
+if ($('oldPwdInput')) $('oldPwdInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnSubmitChangePwd').click(); });
+if ($('newPwdInput')) $('newPwdInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnSubmitChangePwd').click(); });
+if ($('confirmNewPwdInput')) $('confirmNewPwdInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnSubmitChangePwd').click(); });

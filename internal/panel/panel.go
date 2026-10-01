@@ -181,6 +181,7 @@ func (p *Panel) routes() {
 	p.mux.HandleFunc("POST /panel/api/auth/setup", p.authSetup)
 	p.mux.HandleFunc("POST /panel/api/auth/login", p.authLogin)
 	p.mux.HandleFunc("POST /panel/api/auth/logout", p.withSession(p.authLogout))
+	p.mux.HandleFunc("POST /panel/api/auth/password", p.withSession(p.authChangePassword))
 	p.mux.HandleFunc("GET /panel/api/overview", p.withSession(p.overview))
 	p.mux.HandleFunc("GET /panel/api/logs", p.withSession(p.logsHandler))
 	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withSession(p.requestMetrics))

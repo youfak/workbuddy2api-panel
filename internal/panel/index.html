@@ -5,30 +5,30 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>WorkBuddy2API · 控制台</title>
 <style>
-/* ── 设计令牌：明暗两套独立色板 ─────────────────────────────────────────
-   冷石墨基调（仪表盘语言，非营销页）：底色分层 + 单一靛蓝强调（仅交互），
-   语义色只给状态。等宽数字承载所有观测值，tabular-nums 对齐。 */
+/* ── 设计令牌：现代极客科技蓝（无紫调）+ 细腻分层 ──────────────────────────
+   深色模式：深空曜石黑底色 + 专业科技蓝（#3b82f6），纯正利落无紫感。
+   浅色模式：柔白灰底色 + 沉稳商务蓝（#2563eb），高对比易读。 */
 :root {
-  --bg: #0c0e14; --surface: #14171f; --surface-2: #1a1e28; --raise: #202531;
-  --line: #262c3a; --line-soft: #1e232e;
-  --ink: #e8ebf2; --ink-2: #a8b0c2; --ink-3: #6b7488;
-  --accent: #5b7cfa; --accent-ink: #ffffff; --accent-soft: rgba(91,124,250,.13);
-  --ok: #3ddc97; --ok-soft: rgba(61,220,151,.12);
-  --warn: #f5b544; --warn-soft: rgba(245,181,68,.12);
-  --bad: #f0655f; --bad-soft: rgba(240,101,95,.12);
-  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.5);
+  --bg: #0b0f19; --surface: #111827; --surface-2: #1a2234; --raise: #212c42;
+  --line: #243046; --line-soft: #1a2333;
+  --ink: #f1f5f9; --ink-2: #94a3b8; --ink-3: #64748b;
+  --accent: #3b82f6; --accent-hover: #2563eb; --accent-ink: #ffffff; --accent-soft: rgba(59,130,246,.12);
+  --ok: #10b981; --ok-soft: rgba(16,185,129,.12);
+  --warn: #f59e0b; --warn-soft: rgba(245,158,11,.12);
+  --bad: #ef4444; --bad-soft: rgba(239,68,68,.12);
+  --shadow: 0 1px 3px rgba(0,0,0,.35), 0 8px 24px -10px rgba(0,0,0,.5);
   --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
   --sans: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 [data-theme="light"] {
-  --bg: #f4f5f8; --surface: #ffffff; --surface-2: #f8f9fb; --raise: #ffffff;
-  --line: #e2e5ec; --line-soft: #eceef3;
-  --ink: #14171f; --ink-2: #545c6e; --ink-3: #8b93a5;
-  --accent: #3d5fe0; --accent-ink: #ffffff; --accent-soft: rgba(61,95,224,.09);
-  --ok: #0f9d63; --ok-soft: rgba(15,157,99,.1);
-  --warn: #b47611; --warn-soft: rgba(180,118,17,.11);
-  --bad: #cf3b34; --bad-soft: rgba(207,59,52,.09);
-  --shadow: 0 1px 2px rgba(16,20,32,.06), 0 8px 24px -14px rgba(16,20,32,.14);
+  --bg: #f8fafc; --surface: #ffffff; --surface-2: #f1f5f9; --raise: #ffffff;
+  --line: #e2e5ec; --line-soft: #edf2f7;
+  --ink: #0f172a; --ink-2: #475569; --ink-3: #94a3b8;
+  --accent: #2563eb; --accent-hover: #1d4ed8; --accent-ink: #ffffff; --accent-soft: rgba(37,99,235,.08);
+  --ok: #059669; --ok-soft: rgba(5,150,105,.1);
+  --warn: #d97706; --warn-soft: rgba(217,119,6,.1);
+  --bad: #dc2626; --bad-soft: rgba(220,38,38,.09);
+  --shadow: 0 1px 3px rgba(15,23,42,.06), 0 10px 25px -12px rgba(15,23,42,.12);
 }
 * { box-sizing: border-box; margin: 0; padding: 0; }
 [hidden] { display: none !important; }
@@ -37,7 +37,11 @@ body {
   background: var(--bg); color: var(--ink); font: 14px/1.55 var(--sans);
   -webkit-font-smoothing: antialiased;
 }
-::selection { background: var(--accent-soft); }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-3); }
+::selection { background: var(--accent-soft); color: var(--accent); }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
 
@@ -52,11 +56,16 @@ body {
 .brand .sub { color: var(--ink-3); font-size: 11.5px; font-family: var(--mono); margin-top: 3px; }
 .nav ul { list-style: none; padding: 10px 8px; flex: 1; }
 .nav a {
-  display: flex; align-items: center; gap: 10px; padding: 8px 11px; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 10px; padding: 8px 12px; margin-bottom: 3px;
   color: var(--ink-2); text-decoration: none; border-radius: 7px; font-size: 13.5px;
+  position: relative; transition: all .15s ease;
 }
 .nav a:hover { background: var(--surface-2); color: var(--ink); }
-.nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 550; }
+.nav a.on { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.nav a.on::before {
+  content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--accent);
+}
 .nav a svg { width: 15px; height: 15px; flex: none; opacity: .85; }
 .nav .sig { padding: 12px 16px; border-top: 1px solid var(--line-soft); font-size: 11.5px; color: var(--ink-3); }
 .nav .sig .row { display: flex; align-items: center; gap: 7px; }
@@ -151,22 +160,33 @@ body {
 button {
   font: inherit; color: var(--ink); background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 7px; padding: 7px 13px; cursor: pointer;
-  transition: border-color .12s, background .12s;
+  transition: all .15s ease;
 }
-button:hover:not(:disabled) { border-color: var(--accent); }
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--ink); }
 button:disabled { opacity: .5; cursor: default; }
-button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 550; }
-button.primary:hover:not(:disabled) { filter: brightness(1.08); }
+button.primary {
+  background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  font-weight: 550; box-shadow: 0 1px 2px rgba(0,0,0,.15);
+}
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  box-shadow: 0 4px 12px -2px rgba(37,99,235,.35);
+}
 button.ghost { background: transparent; }
+button.ghost:hover:not(:disabled) { background: var(--surface-2); border-color: transparent; }
 button.danger { color: var(--bad); }
-button.danger:hover:not(:disabled) { border-color: var(--bad); }
+button.danger:hover:not(:disabled) { border-color: var(--bad); background: var(--bad-soft); }
 button.xs { padding: 3.5px 9px; font-size: 12.5px; border-radius: 6px; }
 button.icon { padding: 7px 9px; }
 input, select {
   font: inherit; color: var(--ink); background: var(--surface-2);
   border: 1px solid var(--line); border-radius: 7px; padding: 7px 11px; width: 100%;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-input:focus, select:focus { outline: none; border-color: var(--accent); }
+input:focus, select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
 input.invalid { border-color: var(--bad); background: var(--bad-soft); }
 input.invalid:focus { border-color: var(--bad); }
 input[type=checkbox] { width: auto; accent-color: var(--accent); }
@@ -206,6 +226,7 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 }
 .acc td { padding: 11px; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .acc tr:last-child td { border-bottom: none; }
+.acc tbody tr { transition: background .12s ease; }
 .acc tbody tr:hover { background: var(--surface-2); }
 /* 健康色条用真实单元格（td.mark）实现，而不是 tr::before 伪元素：
    伪元素在表格行内会被浏览器当作匿名单元格插入行首，整行内容右移一列、
@@ -298,29 +319,30 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 #reqNote { flex: 0 1 260px; text-align: right; }
 
 /* ── 配置表单 ─────────────────────────────────────────────────────── */
+.card-grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 20px; align-items: stretch; }
+.card-grid2 > .box { margin-bottom: 0; display: flex; flex-direction: column; }
+.card-grid2 > .box > .pad { flex: 1; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; }
 .grid3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 0 16px; }
-@media (max-width: 860px) { .grid2, .grid3 { grid-template-columns: 1fr; } }
+@media (max-width: 860px) { .card-grid2 { grid-template-columns: 1fr; gap: 16px; } .grid2, .grid3 { grid-template-columns: 1fr; } }
 fieldset { border: none; margin-bottom: 6px; }
 legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom: 10px; }
 .hr { height: 1px; background: var(--line-soft); margin: 4px 0 16px; }
 .switch { display: flex; align-items: center; justify-content: space-between; padding: 9px 0; }
 .switch .lb { font-size: 13.5px; }
 .savebar {
-  display: flex; align-items: center; gap: 12px; padding: 13px 17px;
-  border-top: 1px solid var(--line-soft); background: var(--surface-2);
-  position: sticky; bottom: 0;
+  display: flex; align-items: center; gap: 12px; padding: 6px 0 20px;
 }
 .savebar .grow { flex: 1; }
 .restart-note { color: var(--warn); font-size: 12.5px; }
 
 /* ── 弹层 ─────────────────────────────────────────────────────────── */
-.veil { position: fixed; inset: 0; background: rgba(6,8,13,.62); backdrop-filter: blur(2px); display: none; z-index: 60; }
+.veil { position: fixed; inset: 0; background: rgba(8,12,20,.68); backdrop-filter: blur(4px); display: none; z-index: 60; }
 .veil.on { display: flex; align-items: center; justify-content: center; padding: 20px; }
 .dlg {
   background: var(--surface); border: 1px solid var(--line); border-radius: 13px;
   width: 560px; max-width: 100%; max-height: 86vh; display: flex; flex-direction: column;
-  box-shadow: 0 24px 64px -24px rgba(0,0,0,.6);
+  box-shadow: 0 20px 50px -15px rgba(0,0,0,.65), 0 0 0 1px rgba(255,255,255,.04);
 }
 .dlg header { padding: 17px 20px 13px; border-bottom: 1px solid var(--line-soft); }
 .dlg header h3 { font-size: 15px; font-weight: 620; }
@@ -738,17 +760,34 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     <!-- 配置 -->
     <section class="view" id="view-config" hidden>
       <form id="cfgForm">
-        <div class="box">
-          <header><h3>服务</h3><span class="grow"></span><span class="note" id="cfgPath"></span></header>
-          <div class="pad">
-            <div class="grid2">
+        <div class="card-grid2">
+          <!-- 服务基础 -->
+          <div class="box">
+            <header><h3>服务</h3><span class="grow"></span><span class="note" id="cfgPath"></span></header>
+            <div class="pad">
               <label class="fld"><span class="lb">监听地址</span>
                 <input name="listen" placeholder=":7863">
                 <span class="hint">改动需重启进程</span></label>
+              <label class="fld"><span class="lb">单账号明细默认展示条数</span>
+                <input name="package_detail_limit" type="number" min="1" placeholder="5">
+                <span class="hint">积分构成页按最早到期展示，其余未用完包聚合</span></label>
             </div>
-            <label class="fld"><span class="lb">单账号明细默认展示条数</span>
-              <input name="package_detail_limit" type="number" min="1" placeholder="5">
-              <span class="hint">积分构成页按最早到期展示，其余未用完包聚合</span></label>
+          </div>
+
+          <!-- 安全设置 -->
+          <div class="box">
+            <header>
+              <h3>安全设置</h3>
+              <span class="grow"></span>
+              <button type="button" class="xs" id="btnOpenChangePwd">修改管理密码</button>
+            </header>
+            <div class="pad" style="display:flex;flex-direction:column;justify-content:space-between">
+              <div>
+                <div class="state ok" style="margin-bottom:8px">管理密码保护已启用</div>
+                <div class="hint" style="line-height:1.6">WebUI 控制台、系统配置与 AI 密钥已受密码鉴权保护。</div>
+              </div>
+              <div class="hint" style="margin-top:14px;font-family:var(--mono);font-size:11.5px;color:var(--ink-3)">会话保持：12 小时 · HttpOnly Cookie</div>
+            </div>
           </div>
         </div>
 
@@ -1076,6 +1115,36 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     <footer>
       <span class="grow"></span>
       <button class="primary" id="btnKey">进入</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 修改管理密码 -->
+<div class="veil" id="changePwdVeil">
+  <div class="dlg" style="width:420px">
+    <header>
+      <h3>修改管理密码</h3>
+      <div class="hint">输入当前密码与新密码（至少 12 位）。</div>
+    </header>
+    <div class="body">
+      <label class="fld">
+        <span class="lb">当前管理密码</span>
+        <input type="password" id="oldPwdInput" placeholder="请输入当前密码" autocomplete="current-password">
+      </label>
+      <label class="fld">
+        <span class="lb">新管理密码</span>
+        <input type="password" id="newPwdInput" placeholder="请输入新密码（至少 12 位）" autocomplete="new-password">
+      </label>
+      <label class="fld">
+        <span class="lb">确认新密码</span>
+        <input type="password" id="confirmNewPwdInput" placeholder="请再次输入新密码" autocomplete="new-password">
+      </label>
+      <div class="state err" id="changePwdErr" hidden style="margin-top:10px"></div>
+    </div>
+    <footer>
+      <button id="btnCloseChangePwd">取消</button>
+      <span class="grow"></span>
+      <button class="primary" id="btnSubmitChangePwd">保存修改</button>
     </footer>
   </div>
 </div>
