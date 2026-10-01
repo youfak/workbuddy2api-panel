@@ -20,6 +20,7 @@ type Snapshot struct {
 	APIKeys              []apikey.Record // 仅 /v1 AI 路由使用的访问密钥哈希列表
 	SoftCooldown         time.Duration   // 429 软冷却基数（<=0 时调用方回退内置默认）
 	SanitizeFingerprints bool            // 出站请求体指纹脱敏
+	RecordClientInfo     bool            // 请求日志是否记录调用来源（客户端 IP / UA）
 }
 
 // Holder 原子持有当前快照。
