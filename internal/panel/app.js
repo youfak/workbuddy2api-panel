@@ -211,14 +211,15 @@ $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKe
 $('keyConfirm').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
-const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志' };
+const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', keys: 'AI 密钥', config: '配置', logs: '运行日志' };
 function go(v) {
   view = v;
   document.querySelectorAll('.view').forEach(s => s.hidden = s.id !== 'view-' + v);
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
   $('ttl').textContent = TITLES[v];
   if (v === 'models' && !$('mdBody').children.length) loadModels();
-  if (v === 'config') { loadConfig(); loadAPIKeys(); }
+  if (v === 'config') loadConfig();
+  if (v === 'keys') loadAPIKeys();
   if (v === 'logs') loadLogs();
   if (v === 'usage') loadUsage();
   if (v === 'packages') loadPackages();
@@ -709,8 +710,8 @@ function closeAIKeyDialog() {
 }
 $('btnNewAIKey').onclick = openAIKeyDialog;
 $('btnAIKeys').onclick = () => {
-  go('config');
-  history.replaceState(null, '', '#config');
+  go('keys');
+  history.replaceState(null, '', '#keys');
   setTimeout(openAIKeyDialog, 0);
 };
 $('btnCloseAIKey').onclick = closeAIKeyDialog;

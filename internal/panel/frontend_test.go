@@ -65,8 +65,8 @@ func TestWebUIUsesSessionAndAPIKeyManager(t *testing.T) {
 	p := newTestPanel()
 	page := httptest.NewRecorder()
 	p.ServeHTTP(page, httptest.NewRequest("GET", "/panel/", nil))
-	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) || !strings.Contains(page.Body.String(), `id="btnAIKeys"`) {
-		t.Fatal("WebUI is missing a direct AI key management entry")
+	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) || !strings.Contains(page.Body.String(), `id="btnAIKeys"`) || !strings.Contains(page.Body.String(), `data-view="keys"`) {
+		t.Fatal("WebUI is missing a direct AI key management menu")
 	}
 	script := httptest.NewRecorder()
 	p.ServeHTTP(script, httptest.NewRequest("GET", "/panel/app.js", nil))
@@ -130,7 +130,7 @@ try {
 		t.Fatal(err)
 	}
 	hf.Close()
-	for _, hash := range []string{"#taskscenter", "#accounts", "#usage", "#models", "#config", "#logs", "#packages"} {
+	for _, hash := range []string{"#taskscenter", "#accounts", "#usage", "#models", "#keys", "#config", "#logs", "#packages"} {
 		cmd := exec.Command(node, hf.Name(), "app.js")
 		cmd.Dir = "." // 测试工作目录 = internal/panel
 		cmd.Env = append(os.Environ(), "SMOKE_HASH="+hash)
