@@ -65,8 +65,8 @@ func TestWebUIUsesSessionAndAPIKeyManager(t *testing.T) {
 	p := newTestPanel()
 	page := httptest.NewRecorder()
 	p.ServeHTTP(page, httptest.NewRequest("GET", "/panel/", nil))
-	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) {
-		t.Fatal("WebUI is missing the API key management button")
+	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) || !strings.Contains(page.Body.String(), `id="btnAIKeys"`) {
+		t.Fatal("WebUI is missing a direct AI key management entry")
 	}
 	script := httptest.NewRecorder()
 	p.ServeHTTP(script, httptest.NewRequest("GET", "/panel/app.js", nil))
