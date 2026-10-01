@@ -3,6 +3,7 @@ package panel
 import (
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 )
@@ -71,5 +72,35 @@ func TestCleanupPhoneLogins(t *testing.T) {
 	}
 	if _, ok := p.phoneLogins["new"]; !ok {
 		t.Fatal("active phone login was removed")
+	}
+}
+
+func TestPhoneSMSRateLimit(t *testing.T) {
+	p := &Panel{smsRates: map[string]smsRate{}}
+	now := time.Now()
+	if ok, _ := p.allowPhoneSMS("13800138000", "127.0.0.1", now); !ok {
+		t.Fatal("first SMS request must be allowed")
+	}
+	if ok, retry := p.allowPhoneSMS("13800138000", "127.0.0.1", now.Add(time.Second)); ok || retry <= 0 {
+		t.Fatalf("cooldown bypassed: ok=%v retry=%d", ok, retry)
+	}
+	if ok, _ := p.allowPhoneSMS("13800138000", "127.0.0.1", now.Add(phoneSMSCooldown)); !ok {
+		t.Fatal("SMS request after cooldown must be allowed")
+	}
+	if ok, _ := p.allowPhoneSMS("13800138000", "127.0.0.1", now.Add(2*phoneSMSCooldown)); !ok {
+		t.Fatal("third SMS request in the hour must be allowed")
+	}
+	if ok, retry := p.allowPhoneSMS("13800138000", "127.0.0.1", now.Add(3*phoneSMSCooldown)); ok || retry <= 0 {
+		t.Fatalf("hourly phone cap bypassed: ok=%v retry=%d", ok, retry)
+	}
+
+	bySource := &Panel{smsRates: map[string]smsRate{}}
+	for i := 0; i < phoneSMSPerIP; i++ {
+		if ok, _ := bySource.allowPhoneSMS(fmt.Sprintf("phone-%d", i), "198.51.100.10", now); !ok {
+			t.Fatalf("source request %d must be allowed", i)
+		}
+	}
+	if ok, retry := bySource.allowPhoneSMS("phone-over-limit", "198.51.100.10", now); ok || retry <= 0 {
+		t.Fatalf("hourly source cap bypassed: ok=%v retry=%d", ok, retry)
 	}
 }

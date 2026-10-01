@@ -1,6 +1,6 @@
 'use strict';
 /* ── 状态 ─────────────────────────────────────────────────────────── */
-const LS_KEY = 'wb2api.key', LS_THEME = 'wb2api.theme';
+const LS_THEME = 'wb2api.theme';
 let theme = localStorage.getItem(LS_THEME) || 'auto';   // auto | light | dark
 let view = 'accounts';
 let overviewData = null, cfgLoaded = null;
@@ -29,16 +29,20 @@ $('btnTheme').onclick = () => {
   localStorage.setItem(LS_THEME, theme);
   applyTheme();
 };
+$('btnLogout').onclick = async () => {
+  try { await api('auth/logout', { method: 'POST' }); } catch (e) { /* 登录态已失效时直接回到登录框 */ }
+  $('keyInput').value = '';
+  if (refTimer) { clearInterval(refTimer); refTimer = null; }
+  openKey(false);
+};
 applyTheme();
 
 /* ── 请求 ─────────────────────────────────────────────────────────── */
 async function api(path, opts = {}) {
   const h = Object.assign({}, opts.headers || {});
-  const k = localStorage.getItem(LS_KEY);
-  if (k) h['Authorization'] = 'Bearer ' + k;
   if (opts.body) h['Content-Type'] = 'application/json';
-  const r = await fetch('/panel/api/' + path, Object.assign({}, opts, { headers: h }));
-  if (r.status === 401) { openKey(); throw new Error('密钥无效或未填写'); }
+  const r = await fetch('/panel/api/' + path, Object.assign({}, opts, { headers: h, credentials: 'same-origin' }));
+  if (r.status === 401) { openKey(false); throw new Error('管理登录已失效'); }
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
   return d;
@@ -157,20 +161,49 @@ function formatRate(rate) {
   return n.toFixed(1) + 'tok/s';
 }
 
-/* ── 密钥门 ───────────────────────────────────────────────────────── */
-function openKey() { $('keyVeil').classList.add('on'); setTimeout(() => $('keyInput').focus(), 60); }
+/* ── 管理员登录 ───────────────────────────────────────────────────── */
+let panelSetupMode = false;
+function openKey(setup) {
+  panelSetupMode = !!setup;
+  $('keyTitle').textContent = panelSetupMode ? '设置管理密码' : '登录管理面板';
+  $('keyHint').textContent = panelSetupMode ? '首次设置仅限服务所在机器访问，密码至少 12 位。' : '请输入管理密码。';
+  $('keyInput').placeholder = panelSetupMode ? '设置管理密码（至少 12 位）' : '管理密码';
+  $('keyInput').autocomplete = panelSetupMode ? 'new-password' : 'current-password';
+  $('keyConfirm').hidden = !panelSetupMode;
+  $('keyConfirm').value = '';
+  $('keyErr').hidden = true;
+  $('btnKey').textContent = panelSetupMode ? '设置并进入' : '登录';
+  $('keyVeil').classList.add('on');
+  setTimeout(() => $('keyInput').focus(), 60);
+}
 $('btnKey').onclick = async () => {
-  const v = $('keyInput').value.trim();
-  if (!v) return;
-  localStorage.setItem(LS_KEY, v);
+  const password = $('keyInput').value;
+  if (!password) return;
+  if (panelSetupMode && password !== $('keyConfirm').value) {
+    $('keyErr').textContent = '两次输入的密码不一致。';
+    $('keyErr').hidden = false;
+    return;
+  }
+  const btn = $('btnKey');
+  btn.disabled = true;
   try {
-    await api('overview');
+    const endpoint = panelSetupMode ? 'auth/setup' : 'auth/login';
+    const r = await fetch('/panel/api/' + endpoint, {
+      method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     $('keyErr').hidden = true;
     $('keyVeil').classList.remove('on');
     start();
-  } catch (e) { $('keyErr').hidden = false; }
+  } catch (e) {
+    $('keyErr').textContent = panelSetupMode ? '设置失败：' + e.message : '登录失败：' + e.message;
+    $('keyErr').hidden = false;
+  } finally { btn.disabled = false; }
 };
 $('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
+$('keyConfirm').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnKey').click(); });
 
 /* ── 路由 ─────────────────────────────────────────────────────────── */
 const TITLES = { accounts: '账号池', usage: '用量', packages: '积分构成', taskscenter: '任务中心', models: '模型与档位', config: '配置', logs: '运行日志' };
@@ -180,7 +213,7 @@ function go(v) {
   document.querySelectorAll('.nav a').forEach(a => a.classList.toggle('on', a.dataset.view === v));
   $('ttl').textContent = TITLES[v];
   if (v === 'models' && !$('mdBody').children.length) loadModels();
-  if (v === 'config') loadConfig();
+  if (v === 'config') { loadConfig(); loadAPIKeys(); }
   if (v === 'logs') loadLogs();
   if (v === 'usage') loadUsage();
   if (v === 'packages') loadPackages();
@@ -517,7 +550,7 @@ $('btnLogPin').onclick = () => {
 
 /* ── 配置 ─────────────────────────────────────────────────────────── */
 const CFG_MAP = {
-  listen: ['listen'], api_key: ['api_key'],
+  listen: ['listen'],
   package_detail_limit: ['panel', 'package_detail_limit'],
   checkin_hours: ['schedule', 'checkin_hours'], checkin_enabled: ['schedule', 'checkin_enabled'], growth_hours: ['schedule', 'growth_hours'], growth_enabled: ['schedule', 'growth_enabled'],
   travel_hours: ['schedule', 'travel_hours'], travel_enabled: ['schedule', 'travel_enabled'],
@@ -609,12 +642,6 @@ function markDurationFields() {
 $('cfgForm').addEventListener('input', ev => {
   if (DURATION_FIELDS.includes(ev.target.name)) markDurationFields();
 });
-$('btnEye').onclick = () => {
-  const el = $('cfgKey');
-  const show = el.type === 'password';
-  el.type = show ? 'text' : 'password';
-  $('btnEye').textContent = show ? '隐藏' : '显示';
-};
 $('btnCfgReload').onclick = loadConfig;
 $('cfgForm').onsubmit = async ev => {
   ev.preventDefault();
@@ -633,14 +660,71 @@ $('cfgForm').onsubmit = async ev => {
     const r = await api('config', { method: 'POST', body: JSON.stringify(collectConfig()) });
     const n = (r.restart_required || []).length;
     toast(n ? '配置已保存，其中 ' + n + ' 项需重启进程生效' : '配置已保存并立即生效', 'ok');
-    // 密钥可能已改：本次会话沿用新值，避免下一次轮询被 401。
-    const k = $('cfgKey').value.trim();
-    if (k) localStorage.setItem(LS_KEY, k);
     loadConfig();
     loadOverview(true);
   } catch (e) { toast('保存失败：' + e.message, 'err'); }
   finally { btn.disabled = false; btn.textContent = '保存配置'; }
 };
+
+/* ── AI 密钥管理 ─────────────────────────────────────────────────── */
+let createdAIKey = '';
+function renderAPIKeys(keys) {
+  $('aiKeyBody').innerHTML = (keys || []).map(k => '<tr><td>' + esc(k.name) + '</td><td><code>' + esc(k.masked) +
+    '</code></td><td>' + esc(ago(k.created_at)) + '</td><td><button class="xs" data-delete-ai-key="' + esc(k.id) + '">删除</button></td></tr>').join('') ||
+    '<tr><td colspan="4" class="empty">尚未创建 AI 密钥</td></tr>';
+  document.querySelectorAll('[data-delete-ai-key]').forEach(btn => {
+    btn.onclick = async () => {
+      if (!confirm('删除该 AI 密钥后，使用它的客户端将立即无法访问 AI 接口。是否继续？')) return;
+      try {
+        await api('api-keys/' + encodeURIComponent(btn.dataset.deleteAiKey), { method: 'DELETE' });
+        toast('AI 密钥已删除', 'ok');
+        loadAPIKeys();
+      } catch (e) { toast('删除 AI 密钥失败：' + e.message, 'err'); }
+    };
+  });
+}
+async function loadAPIKeys() {
+  try { renderAPIKeys((await api('api-keys')).keys || []); }
+  catch (e) { toast('读取 AI 密钥失败：' + e.message, 'err'); }
+}
+function openAIKeyDialog() {
+  createdAIKey = '';
+  $('aiKeyName').value = '';
+  $('aiKeyOnce').hidden = true;
+  $('aiKeyErr').hidden = true;
+  $('btnCreateAIKey').hidden = false;
+  $('btnCopyAIKey').hidden = true;
+  $('apiKeyVeil').classList.add('on');
+  setTimeout(() => $('aiKeyName').focus(), 60);
+}
+function closeAIKeyDialog() {
+  createdAIKey = '';
+  $('aiKeyOnce').textContent = '';
+  $('apiKeyVeil').classList.remove('on');
+}
+$('btnNewAIKey').onclick = openAIKeyDialog;
+$('btnCloseAIKey').onclick = closeAIKeyDialog;
+$('btnCreateAIKey').onclick = async () => {
+  const name = $('aiKeyName').value.trim();
+  if (!name) return;
+  const btn = $('btnCreateAIKey');
+  btn.disabled = true;
+  try {
+    const r = await api('api-keys', { method: 'POST', body: JSON.stringify({ name }) });
+    createdAIKey = r.key;
+    $('aiKeyOnce').textContent = r.key;
+    $('aiKeyOnce').hidden = false;
+    $('btnCopyAIKey').hidden = false;
+    btn.hidden = true;
+    loadAPIKeys();
+  } catch (e) {
+    $('aiKeyErr').textContent = '创建失败：' + e.message;
+    $('aiKeyErr').hidden = false;
+  } finally { btn.disabled = false; }
+};
+$('btnCopyAIKey').onclick = () => navigator.clipboard.writeText(createdAIKey)
+  .then(() => toast('AI 密钥已复制', 'ok'), () => toast('复制失败，请手动复制', 'err'));
+$('aiKeyName').addEventListener('keydown', e => { if (e.key === 'Enter') $('btnCreateAIKey').click(); });
 
 /* ── 添加账号 ─────────────────────────────────────────────────────── */
 function openAdd() {
@@ -837,11 +921,8 @@ $('importFile').onchange = async () => {
   $('importDone').hidden = true; $('importErr').hidden = true;
   const fd = new FormData();
   fd.append('file', file);
-  const h = {};
-  const k = localStorage.getItem(LS_KEY);
-  if (k) h['Authorization'] = 'Bearer ' + k;
   try {
-    const r = await fetch('/panel/api/import/cockpit', { method: 'POST', body: fd, headers: h });
+    const r = await fetch('/panel/api/import/cockpit', { method: 'POST', body: fd, credentials: 'same-origin' });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
     $('importDone').hidden = false;
@@ -881,13 +962,22 @@ function start() {
   loadOverview(true);
   if (refTimer) clearInterval(refTimer);
   refTimer = setInterval(refreshVisible, 5000);
-  checkAuthGate();
 }
-async function checkAuthGate() {
-  try { await api('overview'); }
-  catch (e) { if (String(e.message).includes('密钥') || String(e.message).includes('api_key')) return; }
+async function bootstrapPanel() {
+  try {
+    const r = await fetch('/panel/api/auth/status', { credentials: 'same-origin' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ('HTTP ' + r.status));
+    if (!d.authenticated) { openKey(!d.configured); return; }
+    $('keyVeil').classList.remove('on');
+    start();
+  } catch (e) {
+    $('keyErr').textContent = '无法读取登录状态：' + e.message;
+    $('keyErr').hidden = false;
+    openKey(false);
+  }
 }
-start();
+bootstrapPanel();
 
 /* ── 积分任务 ─────────────────────────────────────────────────────── */
 let taskUID = null;

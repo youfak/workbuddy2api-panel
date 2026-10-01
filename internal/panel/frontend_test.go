@@ -60,6 +60,25 @@ func TestIndexHTMLNoInlineScript(t *testing.T) {
 	}
 }
 
+// 面板使用 Cookie 登录管理 AI 密钥，不能把 sk- 放进 localStorage 或面板 Bearer 头。
+func TestWebUIUsesSessionAndAPIKeyManager(t *testing.T) {
+	p := newTestPanel()
+	page := httptest.NewRecorder()
+	p.ServeHTTP(page, httptest.NewRequest("GET", "/panel/", nil))
+	if !strings.Contains(page.Body.String(), `id="btnNewAIKey"`) {
+		t.Fatal("WebUI is missing the API key management button")
+	}
+	script := httptest.NewRecorder()
+	p.ServeHTTP(script, httptest.NewRequest("GET", "/panel/app.js", nil))
+	body := script.Body.String()
+	if !strings.Contains(body, "api-keys") || !strings.Contains(body, "credentials: 'same-origin'") {
+		t.Fatal("WebUI does not use session-based API key management")
+	}
+	if strings.Contains(body, "wb2api.key") || strings.Contains(body, "Authorization") {
+		t.Fatal("WebUI must not persist or send AI keys for panel authentication")
+	}
+}
+
 // TestAppJSTopLevelSmoke app.js 顶层求值冒烟（v1.11.3/1.11.4 两连炸后补的运行时闸门）：
 // node + DOM 桩执行 app.js（含按 hash 落到各视图的 go() 顶层调用），抓 TDZ/
 // ReferenceError 类运行时错误——Go 侧 frontend_test 不执行 JS，语法层检查对此全盲。

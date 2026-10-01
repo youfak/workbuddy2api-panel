@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/panel"
@@ -55,10 +56,10 @@ func main() {
 	if err != nil {
 		// errors.Is 才能看穿 Load 里 fmt.Errorf("%w") 的包装；os.IsNotExist 不行。
 		if errors.Is(err, fs.ErrNotExist) {
-			// 首次运行：目录下没有配置 → 自动落一份推荐配置（含随机 api_key）再加载。
-			// 双击 exe / 裸跑 docker 即开，无需先手工复制样例。
-			if key, werr := WriteDefault(*cfgPath); werr == nil {
-				log.Printf("config %s 不存在，已生成推荐配置（api_key=%s，记录在该文件里，可自行修改）", *cfgPath, key)
+			// 首次运行：目录下没有配置 → 自动落一份推荐配置再加载。
+			// 双击 exe / 裸跑 docker 即开；首个本机访问者在 WebUI 设置管理密码。
+			if werr := WriteDefault(*cfgPath); werr == nil {
+				log.Printf("config %s 不存在，已生成推荐配置；请在 WebUI 设置管理密码和 AI 密钥", *cfgPath)
 				cfg, err = Load(*cfgPath)
 			}
 			if err != nil {
@@ -218,9 +219,9 @@ func main() {
 
 	// 管理面板日志镜像：标准 log（stderr）与 chat 表格日志（stdout）双路复制进
 	// 面板环形缓冲，供 /panel/api/logs 读取；控制台输出行为完全不变。
-	// live 承载可热改字段（api_key/soft_rate/脱敏开关），面板保存配置时在线替换。
+	// live 承载可热改字段（AI 密钥/soft_rate/脱敏开关），面板保存配置时在线替换。
 	live := livecfg.New(livecfg.Snapshot{
-		APIKey:               cfg.APIKey,
+		APIKeys:              cfg.APIKeys,
 		SoftCooldown:         cfg.SoftRateDur,
 		SanitizeFingerprints: cfg.Features.SanitizeBlacklistFingerprints,
 	})
@@ -255,7 +256,6 @@ func main() {
 		Upstream:    up,
 		Scheduler:   sch,
 		AuthDir:     cfg.AuthDir,
-		APIKey:      cfg.APIKey,
 		RedisMode:   redisMode,
 		StickyCount: sessCount,
 		Version:     appVersion,
@@ -270,6 +270,66 @@ func main() {
 		SaveConfig: func(raw []byte) ([]string, error) {
 			return saveConfig(raw, *cfgPath, live, p, up, sch)
 		},
+		ListAPIKeys: func() ([]apikey.PublicRecord, error) {
+			current, err := Load(*cfgPath)
+			if err != nil {
+				return nil, err
+			}
+			return apikey.Public(current.APIKeys), nil
+		},
+		CreateAPIKey: func(name string) (apikey.PublicRecord, string, error) {
+			current, err := Load(*cfgPath)
+			if err != nil {
+				return apikey.PublicRecord{}, "", err
+			}
+			record, plain, err := apikey.Create(name)
+			if err != nil {
+				return apikey.PublicRecord{}, "", err
+			}
+			raw, err := json.Marshal(map[string]any{"api_keys": append(current.APIKeys, record)})
+			if err != nil {
+				return apikey.PublicRecord{}, "", fmt.Errorf("marshal api keys: %w", err)
+			}
+			if _, err := saveConfig(raw, *cfgPath, live, p, up, sch); err != nil {
+				return apikey.PublicRecord{}, "", err
+			}
+			return apikey.Public([]apikey.Record{record})[0], plain, nil
+		},
+		DeleteAPIKey: func(id string) error {
+			current, err := Load(*cfgPath)
+			if err != nil {
+				return err
+			}
+			keys := make([]apikey.Record, 0, len(current.APIKeys))
+			found := false
+			for _, record := range current.APIKeys {
+				if record.ID == id {
+					found = true
+					continue
+				}
+				keys = append(keys, record)
+			}
+			if !found {
+				return fmt.Errorf("api key not found")
+			}
+			raw, err := json.Marshal(map[string]any{"api_keys": keys})
+			if err != nil {
+				return fmt.Errorf("marshal api keys: %w", err)
+			}
+			_, err = saveConfig(raw, *cfgPath, live, p, up, sch)
+			return err
+		},
+		PanelPasswordHash: cfg.Panel.AdminPasswordHash,
+		SavePanelPassword: func(hash string) error {
+			raw, err := json.Marshal(map[string]any{
+				"panel": map[string]string{"admin_password_hash": hash},
+			})
+			if err != nil {
+				return fmt.Errorf("marshal panel password: %w", err)
+			}
+			_, err = saveConfig(raw, *cfgPath, live, p, up, sch)
+			return err
+		},
 	})
 	// 成长任务队列每日自动执行（与「执行全部待办」同管线）：Sequential 族零点解锁后
 	// 无需手动扫描；hook 返回即启动（异步执行），已在跑时内部跳过。
@@ -278,19 +338,19 @@ func main() {
 	server.SetChatLogOutput(io.MultiWriter(os.Stdout, pn.Logs()))
 
 	h := server.NewHandler(server.Config{
-		Pool:         p,
-		Upstream:     up,
-		APIKey:       cfg.APIKey,
-		Session:      sessRouter,
-		StickyCount:  sessCount,
-		RedisMode:    redisMode,
-		SoftCooldown: cfg.SoftRateDur,
-		Panel:        pn,
-		Live:         live,
-		Usage:        rec,
-		RequestLog:   requestLog,
-		PromptMode:   cfg.Prompt.Mode,
-		PromptText:   cfg.PromptText,
+		Pool:           p,
+		Upstream:       up,
+		Session:        sessRouter,
+		StickyCount:    sessCount,
+		RedisMode:      redisMode,
+		SoftCooldown:   cfg.SoftRateDur,
+		Panel:          pn,
+		ManagementAuth: pn.WithSession,
+		Live:           live,
+		Usage:          rec,
+		RequestLog:     requestLog,
+		PromptMode:     cfg.Prompt.Mode,
+		PromptText:     cfg.PromptText,
 		// handler 侧第三道闸（global realm）：false（显式逃生门）时不列 global: 模型名。
 		GlobalEnabled: cfg.Global.Enabled,
 	})
@@ -321,7 +381,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("workbuddy2api listening on %s (api_key=%v)，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, cfg.APIKey != "", panelListenPath(cfg.Listen))
+	log.Printf("workbuddy2api listening on %s，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, panelListenPath(cfg.Listen))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)
 	}
@@ -342,7 +402,7 @@ func panelListenPath(listen string) string {
 // saveConfig 面板保存配置：校验 → 落盘 → 热应用 → 返回需重启的字段列表。
 //
 // 热生效范围（设计取舍）：
-//   - api_key / cooldown.soft_rate / features.sanitize_blacklist_fingerprints → livecfg 快照
+//   - api_keys / cooldown.soft_rate / features.sanitize_blacklist_fingerprints → livecfg 快照
 //   - pool.* → pool.SetBreaker/SetMaxInFlight/SetSoftRateMax/SetWeights/SetCostExploreInterval/SetPreferExpiring
 //   - schedule.* → scheduler.Reconfigure/SetBalanceInterval/SetExpiringSoonWindow
 //
@@ -413,7 +473,7 @@ func saveConfig(raw []byte, path string, live *livecfg.Holder, p *pool.Pool, up 
 
 	// 4) 热应用：能立即生效的字段全部应用，并列出仍需重启的字段。
 	live.Store(livecfg.Snapshot{
-		APIKey:               newCfg.APIKey,
+		APIKeys:              newCfg.APIKeys,
 		SoftCooldown:         newCfg.SoftRateDur,
 		SanitizeFingerprints: newCfg.Features.SanitizeBlacklistFingerprints,
 	})

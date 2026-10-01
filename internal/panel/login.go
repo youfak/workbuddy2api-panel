@@ -19,12 +19,14 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -361,6 +363,11 @@ func (p *Panel) phoneSendCode(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "手机号格式错误，请输入11位手机号")
 		return
 	}
+	if allowed, retryAfter := p.allowPhoneSMS(phone, requestIP(r), time.Now()); !allowed {
+		w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+		writeErr(w, http.StatusTooManyRequests, fmt.Sprintf("短信发送过于频繁，请 %d 秒后重试", retryAfter))
+		return
+	}
 
 	verifier, challenge, err := phonePKCE()
 	if err != nil {
@@ -481,6 +488,84 @@ func (p *Panel) phoneLogin(w http.ResponseWriter, r *http.Request) {
 
 func validPhone(phone string) bool {
 	return phoneRE.MatchString(phone)
+}
+
+const (
+	phoneSMSCooldown = 60 * time.Second
+	phoneSMSWindow   = time.Hour
+	phoneSMSPerPhone = 3
+	phoneSMSPerIP    = 10
+)
+
+type smsRate struct {
+	windowStart time.Time
+	lastSent    time.Time
+	sent        int
+}
+
+// allowPhoneSMS 同时限制同一手机号和同一来源：每次至少间隔一分钟，手机号每小时
+// 最多 3 条，单来源最多 10 条。计数在上游调用前登记，失败重试也不能放大短信发送。
+func (p *Panel) allowPhoneSMS(phone, source string, now time.Time) (allowed bool, retryAfter int) {
+	p.smsMu.Lock()
+	defer p.smsMu.Unlock()
+	if p.smsRates == nil {
+		p.smsRates = map[string]smsRate{}
+	}
+	phoneKey, ipKey := "phone:"+phone, "ip:"+source
+	phoneRate := resetSMSWindow(p.smsRates[phoneKey], now)
+	ipRate := resetSMSWindow(p.smsRates[ipKey], now)
+	if retry := smsRetryAfter(phoneRate, now, phoneSMSPerPhone); retry > 0 {
+		return false, retry
+	}
+	if retry := smsHourlyRetryAfter(ipRate, now, phoneSMSPerIP); retry > 0 {
+		return false, retry
+	}
+	p.smsRates[phoneKey] = recordSMS(phoneRate, now)
+	p.smsRates[ipKey] = recordSMS(ipRate, now)
+	for key, rate := range p.smsRates {
+		if now.Sub(rate.windowStart) > phoneSMSWindow {
+			delete(p.smsRates, key)
+		}
+	}
+	return true, 0
+}
+
+func resetSMSWindow(rate smsRate, now time.Time) smsRate {
+	if rate.windowStart.IsZero() || now.Sub(rate.windowStart) >= phoneSMSWindow {
+		return smsRate{windowStart: now}
+	}
+	return rate
+}
+
+func smsRetryAfter(rate smsRate, now time.Time, limit int) int {
+	if !rate.lastSent.IsZero() && now.Sub(rate.lastSent) < phoneSMSCooldown {
+		return max(1, int((phoneSMSCooldown-now.Sub(rate.lastSent)+time.Second-1)/time.Second))
+	}
+	if rate.sent >= limit {
+		return max(1, int((phoneSMSWindow-now.Sub(rate.windowStart)+time.Second-1)/time.Second))
+	}
+	return 0
+}
+
+func smsHourlyRetryAfter(rate smsRate, now time.Time, limit int) int {
+	if rate.sent >= limit {
+		return max(1, int((phoneSMSWindow-now.Sub(rate.windowStart)+time.Second-1)/time.Second))
+	}
+	return 0
+}
+
+func recordSMS(rate smsRate, now time.Time) smsRate {
+	rate.lastSent = now
+	rate.sent++
+	return rate
+}
+
+func requestIP(r *http.Request) string {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil || host == "" {
+		return r.RemoteAddr
+	}
+	return host
 }
 
 func phonePKCE() (verifier, challenge string, err error) {

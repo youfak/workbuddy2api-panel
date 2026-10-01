@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/redisstore"
@@ -33,6 +35,8 @@ func TestMain(m *testing.M) {
 const sseOK = "data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"你好\"}}]}\n\n" +
 	"data: {\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"created\":1753600000,\"model\":\"glm-5.2\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":1,\"total_tokens\":2}}\n\n" +
 	"data: [DONE]\n\n"
+
+func allowManagement(next http.HandlerFunc) http.HandlerFunc { return next }
 
 // newFakeUpstream 返回一个 ChatStream 走 fake 的 upstream.Client。
 // fake 依据 Authorization 头决定行为。
@@ -1045,10 +1049,14 @@ func TestModelsNegativeCacheOnFetchFailure(t *testing.T) {
 }
 
 func TestAPIKeyAuth(t *testing.T) {
+	record, key, err := apikey.Create("test")
+	if err != nil {
+		t.Fatal(err)
+	}
 	h := NewHandler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
 		Upstream: upstream.New(),
-		APIKey:   "secret",
+		Live:     livecfg.New(livecfg.Snapshot{APIKeys: []apikey.Record{record}}),
 	})
 	// 无 key
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
@@ -1067,7 +1075,7 @@ func TestAPIKeyAuth(t *testing.T) {
 	}
 	// 对 key（请求会继续打到上游，但此处上游 client 会失败 —— 只要不是 401 就行）
 	req = httptest.NewRequest("GET", "/v1/models", nil)
-	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Authorization", "Bearer "+key)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -1078,7 +1086,7 @@ func TestAPIKeyAuth(t *testing.T) {
 func TestStatusEndpoint(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", Nickname: "nick", AccessToken: "at", ExpiresAt: 9999999999})
 	p.SetCredits("u1", 42, 0)
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	req := httptest.NewRequest("GET", "/status", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1121,7 +1129,7 @@ func TestStatusInFlightFull(t *testing.T) {
 	p.Acquire("full")
 	defer p.Release("full")
 
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	if rec.Code != 200 {
@@ -1146,7 +1154,7 @@ func TestStatusPortraitFields(t *testing.T) {
 	p.NoteSuccess("u1")
 	p.NoteError("u1") // 记录 last_err + err_total（累计，不冷却）
 	p.Cooldown("u1", pool.CoolSoft, time.Hour, "429 rate limit")
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	if rec.Code != 200 {
@@ -1300,13 +1308,11 @@ func TestHealthzServiceIdentity(t *testing.T) {
 	}
 }
 
-// TestHealthzServiceIdentityWithoutAuth /healthz 保持无鉴权（负载均衡友好）：
-// 配了 api_key 也不要求 Bearer，身份字段照常返回。
+// TestHealthzServiceIdentityWithoutAuth /healthz 保持无鉴权（负载均衡友好）。
 func TestHealthzServiceIdentityWithoutAuth(t *testing.T) {
 	h := NewHandler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
 		Upstream: upstream.New(),
-		APIKey:   "secret",
 	})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
@@ -1318,24 +1324,15 @@ func TestHealthzServiceIdentityWithoutAuth(t *testing.T) {
 	}
 }
 
-func TestStatusRequiresAuth(t *testing.T) {
+func TestStatusIsNotMountedWithoutManagementWrapper(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", Nickname: "nick", AccessToken: "at", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), APIKey: "secret"})
+	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
 
-	// 无 token → 401
+	// 未注入管理会话时不挂载状态端点，避免 AI 密钥或匿名请求读取管理数据。
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
-	if rec.Code != 401 {
-		t.Errorf("no token: code=%d", rec.Code)
-	}
-
-	// 带 token → 200
-	rec = httptest.NewRecorder()
-	req := httptest.NewRequest("GET", "/status", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	h.ServeHTTP(rec, req)
-	if rec.Code != 200 {
-		t.Errorf("with token: code=%d", rec.Code)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status without management auth: code=%d want 404", rec.Code)
 	}
 
 	// /healthz 无鉴权仍 200

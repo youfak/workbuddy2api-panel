@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // model_probes 端点三态：文件存在 → 透传 + exists:true + updated_at；
@@ -23,22 +24,23 @@ func TestModelProbesEndpoint(t *testing.T) {
 
 	get := func(cfg Config) *httptest.ResponseRecorder {
 		p := New(cfg)
+		p.sessions["test-session"] = panelSession{expiresAt: time.Now().Add(time.Hour)}
 		req := httptest.NewRequest("GET", "/panel/api/model_probes", nil)
-		req.Header.Set("Authorization", "Bearer test-key")
+		req.AddCookie(&http.Cookie{Name: panelSessionCookie, Value: "test-session"})
 		rec := httptest.NewRecorder()
 		p.ServeHTTP(rec, req)
 		return rec
 	}
 
 	// 1) 文件存在：透传 + exists + updated_at
-	rec := get(Config{Version: "test", APIKey: "test-key", ProbeFile: f})
+	rec := get(Config{Version: "test", ProbeFile: f})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
 	var got struct {
 		Probes    map[string]json.RawMessage `json:"probes"`
-		Exists    bool                        `json:"exists"`
-		UpdatedAt string                      `json:"updated_at"`
+		Exists    bool                       `json:"exists"`
+		UpdatedAt string                     `json:"updated_at"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
@@ -59,13 +61,13 @@ func TestModelProbesEndpoint(t *testing.T) {
 
 	// 2) 文件缺失：空集 200（不是错误——无数据 = 无标注）。
 	//    注意每个 case 用全新结构体：向已非 nil 的 map 再次 Unmarshal 是合并不是替换。
-	rec = get(Config{Version: "test", APIKey: "test-key", ProbeFile: filepath.Join(dir, "nope.json")})
+	rec = get(Config{Version: "test", ProbeFile: filepath.Join(dir, "nope.json")})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("missing file: code=%d want 200", rec.Code)
 	}
 	var gotEmpty struct {
 		Probes map[string]json.RawMessage `json:"probes"`
-		Exists bool                        `json:"exists"`
+		Exists bool                       `json:"exists"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &gotEmpty); err != nil {
 		t.Fatal(err)
@@ -75,7 +77,7 @@ func TestModelProbesEndpoint(t *testing.T) {
 	}
 
 	// 3) 未配置：同文件缺失
-	rec = get(Config{Version: "test", APIKey: "test-key"})
+	rec = get(Config{Version: "test"})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("unconfigured: code=%d want 200", rec.Code)
 	}
@@ -85,7 +87,7 @@ func TestModelProbesEndpoint(t *testing.T) {
 	if err := os.WriteFile(bad, []byte(`{not json`), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rec = get(Config{Version: "test", APIKey: "test-key", ProbeFile: bad})
+	rec = get(Config{Version: "test", ProbeFile: bad})
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("corrupt file: code=%d want 502", rec.Code)
 	}

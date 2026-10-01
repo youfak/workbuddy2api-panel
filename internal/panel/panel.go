@@ -4,8 +4,8 @@
 //
 // 设计约束：
 //   - 前端 go:embed 单文件（index.html），无任何外部构建依赖，与二进制同体部署；
-//   - 鉴权复用网关 api_key（Bearer），与 /v1/* 同一口径；api_key 为空 = 不鉴权
-//     （仅本机/私网使用）。面板 HTML 本身无秘密，可匿名加载，密钥只发给 /panel/api/*；
+//   - 面板使用独立管理密码签发 HttpOnly 会话 Cookie；AI sk- 密钥只允许 /v1/* 路由，
+//     不进入浏览器持久化存储，也不能调用 /panel/api/*；
 //   - 不改写既有池语义：所有运维操作落到 pool 已有入口（Revive/Disable/Remove...），
 //     添加账号走 auth.SaveAtomic + pool.Add，重启后与 auths/ 目录天然对齐。
 package panel
@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/pool"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/reqlog"
@@ -36,7 +36,6 @@ type Config struct {
 	Upstream  *upstream.Client
 	Scheduler *scheduler.Scheduler // 手动触发签到/保活；nil 时对应接口返回 501
 	AuthDir   string               // OAuth 登录完成后凭证落盘目录
-	APIKey    string               // 空 = 不鉴权（与主服务同语义）；与 Live 同时给出时 Live 优先
 	RedisMode string               // "upstash" / "noop"，仅观测透出
 	Version   string               // 面板版本号（展示用）
 
@@ -51,6 +50,15 @@ type Config struct {
 	// SaveConfig 校验并落盘配置，返回需要重启才能生效的字段列表；随后由 main 注入的
 	// ApplyConfig 闭包完成热生效（池参数/排程/密钥/脱敏）。error 时配置不写盘。
 	SaveConfig func(raw []byte) (restartRequired []string, err error)
+	// List/Create/DeleteAPIKey 管理只供 /v1 AI 路由使用的 sk- 密钥。Create 返回的
+	// 完整明文只会通过本次响应传递，持久化层只保存哈希。
+	ListAPIKeys  func() ([]apikey.PublicRecord, error)
+	CreateAPIKey func(name string) (apikey.PublicRecord, string, error)
+	DeleteAPIKey func(id string) error
+	// PanelPasswordHash 是服务端加载的管理密码哈希；SavePanelPassword 原子写入
+	// 新哈希。两者均不回显给浏览器。
+	PanelPasswordHash string
+	SavePanelPassword func(hash string) error
 
 	// StickyCount 返回粘性会话绑定数；nil 时报告 0。
 	StickyCount func() int
@@ -79,10 +87,22 @@ type Panel struct {
 	loginMu sync.Mutex
 	logins  map[string]loginSession
 
+	// configMu 串行化配置、密码与 API 密钥写入，防止并发请求互相覆盖。
+	configMu sync.Mutex
+
+	// authMu 保护管理密码哈希与服务端会话表。会话 Cookie 只有随机标识，密码与
+	// 密钥均不进入浏览器持久化存储。
+	authMu            sync.Mutex
+	panelPasswordHash string
+	sessions          map[string]panelSession
+
 	// phoneLogins 保存手机号短信登录的短期 PKCE/Cookie 会话。
 	// 与无 Cookie 的 OAuth 设备登录分开，避免两条流程相互污染。
 	phoneMu     sync.Mutex
 	phoneLogins map[string]phoneLoginSession
+	// smsMu/smsRates 对短信发送做服务端限流，不能只依赖前端倒计时。
+	smsMu    sync.Mutex
+	smsRates map[string]smsRate
 
 	// taskMu/taskLocks 一键完成任务的 per-account 互斥：同一账号的任务动作
 	// （单任务 / 全量）同时只允许一条在跑。重复点击直接返回 409"仍在执行"，
@@ -137,12 +157,15 @@ func New(cfg Config) *Panel {
 		cfg.RedisMode = "noop"
 	}
 	p := &Panel{
-		cfg:         cfg,
-		mux:         http.NewServeMux(),
-		started:     time.Now(),
-		logs:        NewRing(500),
-		logins:      map[string]loginSession{},
-		phoneLogins: map[string]phoneLoginSession{},
+		cfg:               cfg,
+		mux:               http.NewServeMux(),
+		started:           time.Now(),
+		logs:              NewRing(500),
+		logins:            map[string]loginSession{},
+		phoneLogins:       map[string]phoneLoginSession{},
+		smsRates:          map[string]smsRate{},
+		panelPasswordHash: cfg.PanelPasswordHash,
+		sessions:          map[string]panelSession{},
 	}
 	p.routes()
 	return p
@@ -154,43 +177,50 @@ func (p *Panel) Logs() *Ring { return p.logs }
 func (p *Panel) routes() {
 	p.mux.HandleFunc("GET /panel/{$}", p.index)
 	p.mux.HandleFunc("GET /panel/app.js", p.appScript)
-	p.mux.HandleFunc("GET /panel/api/overview", p.withAuth(p.overview))
-	p.mux.HandleFunc("GET /panel/api/logs", p.withAuth(p.logsHandler))
-	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withAuth(p.requestMetrics))
-	p.mux.HandleFunc("GET /panel/api/request_logs", p.withAuth(p.requestLogs))
-	p.mux.HandleFunc("GET /panel/api/models", p.withAuth(p.models))
-	p.mux.HandleFunc("POST /panel/api/login/start", p.withAuth(p.loginStart))
-	p.mux.HandleFunc("GET /panel/api/login/poll", p.withAuth(p.loginPoll))
-	p.mux.HandleFunc("GET /panel/api/login/regions", p.withAuth(p.loginRegions))
-	p.mux.HandleFunc("POST /panel/api/phone/send-code", p.withAuth(p.phoneSendCode))
-	p.mux.HandleFunc("POST /panel/api/phone/login", p.withAuth(p.phoneLogin))
-	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withAuth(p.importCockpit))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withAuth(p.accountRevive))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withAuth(p.accountDisable))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withAuth(p.accountCheckin))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.withAuth(p.accountBalance))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.withAuth(p.accountRemove))
-	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withAuth(p.accountTasks))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withAuth(p.accountTaskAccept))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withAuth(p.taskAcceptAll))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/claim", p.withAuth(p.accountTaskClaim))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/auto", p.withAuth(p.accountTaskAuto))
-	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/auto_all", p.withAuth(p.accountTaskAutoAll))
-	p.mux.HandleFunc("POST /panel/api/tasks/scan_all", p.withAuth(p.tasksScanAll))
-	p.mux.HandleFunc("POST /panel/api/tasks/run_queue", p.withAuth(p.tasksRunQueue))
-	p.mux.HandleFunc("GET /panel/api/tasks/queue", p.withAuth(p.tasksQueueStatus))
-	p.mux.HandleFunc("GET /panel/api/school/vouchers", p.withAuth(p.schoolVouchers))
-	p.mux.HandleFunc("POST /panel/api/checkin_all", p.withAuth(p.checkinAll))
-	p.mux.HandleFunc("POST /panel/api/travel_all", p.withAuth(p.travelAll))
-	p.mux.HandleFunc("POST /panel/api/activity_all", p.withAuth(p.activityAll))
-	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withAuth(p.keepaliveAll))
-	p.mux.HandleFunc("POST /panel/api/balance_all", p.withAuth(p.balanceAll))
-	p.mux.HandleFunc("GET /panel/api/packages", p.withAuth(p.packages))
-	p.mux.HandleFunc("GET /panel/api/usage", p.withAuth(p.usage))
-	p.mux.HandleFunc("POST /panel/api/usage/save", p.withAuth(p.usageSave))
-	p.mux.HandleFunc("GET /panel/api/model_probes", p.withAuth(p.modelProbes))
-	p.mux.HandleFunc("GET /panel/api/config", p.withAuth(p.getConfig))
-	p.mux.HandleFunc("POST /panel/api/config", p.withAuth(p.saveConfig))
+	p.mux.HandleFunc("GET /panel/api/auth/status", p.authStatus)
+	p.mux.HandleFunc("POST /panel/api/auth/setup", p.authSetup)
+	p.mux.HandleFunc("POST /panel/api/auth/login", p.authLogin)
+	p.mux.HandleFunc("POST /panel/api/auth/logout", p.withSession(p.authLogout))
+	p.mux.HandleFunc("GET /panel/api/overview", p.withSession(p.overview))
+	p.mux.HandleFunc("GET /panel/api/logs", p.withSession(p.logsHandler))
+	p.mux.HandleFunc("GET /panel/api/request_metrics", p.withSession(p.requestMetrics))
+	p.mux.HandleFunc("GET /panel/api/request_logs", p.withSession(p.requestLogs))
+	p.mux.HandleFunc("GET /panel/api/models", p.withSession(p.models))
+	p.mux.HandleFunc("POST /panel/api/login/start", p.withSession(p.loginStart))
+	p.mux.HandleFunc("GET /panel/api/login/poll", p.withSession(p.loginPoll))
+	p.mux.HandleFunc("GET /panel/api/login/regions", p.withSession(p.loginRegions))
+	p.mux.HandleFunc("POST /panel/api/phone/send-code", p.withSession(p.phoneSendCode))
+	p.mux.HandleFunc("POST /panel/api/phone/login", p.withSession(p.phoneLogin))
+	p.mux.HandleFunc("POST /panel/api/import/cockpit", p.withSession(p.importCockpit))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/revive", p.withSession(p.accountRevive))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/disable", p.withSession(p.accountDisable))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/checkin", p.withSession(p.accountCheckin))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/balance", p.withSession(p.accountBalance))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/remove", p.withSession(p.accountRemove))
+	p.mux.HandleFunc("GET /panel/api/accounts/{uid}/tasks", p.withSession(p.accountTasks))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept", p.withSession(p.accountTaskAccept))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/accept_all", p.withSession(p.taskAcceptAll))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/claim", p.withSession(p.accountTaskClaim))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/auto", p.withSession(p.accountTaskAuto))
+	p.mux.HandleFunc("POST /panel/api/accounts/{uid}/tasks/auto_all", p.withSession(p.accountTaskAutoAll))
+	p.mux.HandleFunc("POST /panel/api/tasks/scan_all", p.withSession(p.tasksScanAll))
+	p.mux.HandleFunc("POST /panel/api/tasks/run_queue", p.withSession(p.tasksRunQueue))
+	p.mux.HandleFunc("GET /panel/api/tasks/queue", p.withSession(p.tasksQueueStatus))
+	p.mux.HandleFunc("GET /panel/api/school/vouchers", p.withSession(p.schoolVouchers))
+	p.mux.HandleFunc("POST /panel/api/checkin_all", p.withSession(p.checkinAll))
+	p.mux.HandleFunc("POST /panel/api/travel_all", p.withSession(p.travelAll))
+	p.mux.HandleFunc("POST /panel/api/activity_all", p.withSession(p.activityAll))
+	p.mux.HandleFunc("POST /panel/api/keepalive_all", p.withSession(p.keepaliveAll))
+	p.mux.HandleFunc("POST /panel/api/balance_all", p.withSession(p.balanceAll))
+	p.mux.HandleFunc("GET /panel/api/packages", p.withSession(p.packages))
+	p.mux.HandleFunc("GET /panel/api/usage", p.withSession(p.usage))
+	p.mux.HandleFunc("POST /panel/api/usage/save", p.withSession(p.usageSave))
+	p.mux.HandleFunc("GET /panel/api/model_probes", p.withSession(p.modelProbes))
+	p.mux.HandleFunc("GET /panel/api/config", p.withSession(p.getConfig))
+	p.mux.HandleFunc("POST /panel/api/config", p.withSession(p.saveConfig))
+	p.mux.HandleFunc("GET /panel/api/api-keys", p.withSession(p.listAPIKeys))
+	p.mux.HandleFunc("POST /panel/api/api-keys", p.withSession(p.createAPIKey))
+	p.mux.HandleFunc("DELETE /panel/api/api-keys/{id}", p.withSession(p.deleteAPIKey))
 }
 
 // ServeHTTP 统一入口：先写安全响应头再分发，保证页面、静态资源、API
@@ -198,27 +228,6 @@ func (p *Panel) routes() {
 func (p *Panel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
 	p.mux.ServeHTTP(w, r)
-}
-
-// withAuth 与 server 包同口径的 Bearer 鉴权（经 httpauth 常量时间比较）；
-// api_key 为空时放行。密钥经 livecfg 快照读取：面板里改了 api_key，下一个请求
-// 即用新值（无需重启）。
-func (p *Panel) withAuth(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !httpauth.VerifyBearer(r, p.apiKey()) {
-			writeErr(w, http.StatusUnauthorized, "invalid_api_key")
-			return
-		}
-		next(w, r)
-	}
-}
-
-// apiKey 当前生效密钥（Live 优先，回落静态字段）。
-func (p *Panel) apiKey() string {
-	if p.cfg.Live != nil {
-		return p.cfg.Live.Load().APIKey
-	}
-	return p.cfg.APIKey
 }
 
 // expiringSoonWindow 返回调度器当前生效的快过期路由窗口；测试面板无调度器时返回 0。
@@ -243,7 +252,7 @@ func (p *Panel) overview(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"version":         p.cfg.Version,
 		"uptime_sec":      int(time.Since(p.started).Seconds()),
-		"auth_required":   p.apiKey() != "",
+		"auth_required":   p.panelLoginConfigured(),
 		"redis_mode":      p.cfg.RedisMode,
 		"sticky_sessions": sticky,
 		"total":           total,

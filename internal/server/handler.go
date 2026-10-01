@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/auth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/httpauth"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/livecfg"
@@ -29,8 +30,7 @@ import (
 type Config struct {
 	Pool      *pool.Pool
 	Upstream  *upstream.Client
-	APIKey    string // 空 = 不鉴权（静态值；与 Live 同时给出时 Live 优先）
-	MaxRotate int    // 单请求最多换号次数，默认 3
+	MaxRotate int // 单请求最多换号次数，默认 3
 	// Session 会话粘性路由器（可选；nil = 关闭粘性，纯 Pick 轮换）。
 	Session *session.Router
 	// StickyCount 返回当前粘性会话绑定数（供 /status）；nil 时报告 0。
@@ -41,10 +41,13 @@ type Config struct {
 	RefreshSkew  time.Duration // token 提前刷新窗口，默认 10m
 
 	// Panel 管理面板 handler（可选；nil = 不挂载）。挂载在 /panel/ 前缀下，
-	// 面板自带 Bearer 鉴权（同一 api_key）与内嵌静态资源，主路由只做转发。
+	// 面板自带独立登录会话与内嵌静态资源，主路由只做转发。
 	Panel http.Handler
+	// ManagementAuth 保护非 AI 的管理端点（当前为 /status）。生产由面板注入独立
+	// 会话鉴权；nil 时不挂出 /status，避免 AI 密钥越权访问管理状态。
+	ManagementAuth func(http.HandlerFunc) http.HandlerFunc
 
-	// Live 运行期可变配置（面板在线改 api_key / soft_rate / 脱敏开关时立即生效）。
+	// Live 运行期可变配置（面板在线改 AI 密钥 / soft_rate / 脱敏开关时立即生效）。
 	// nil 时回退静态字段（测试与裸用场景）。
 	Live *livecfg.Holder
 
@@ -74,7 +77,6 @@ func (h *Handler) loadLive() livecfg.Snapshot {
 		return h.cfg.Live.Load()
 	}
 	return livecfg.Snapshot{
-		APIKey:       h.cfg.APIKey,
 		SoftCooldown: h.cfg.SoftCooldown,
 	}
 }
@@ -126,9 +128,11 @@ func NewHandler(cfg Config) *Handler {
 		cfg.PromptMode = "custom" // 缺省 custom：网关自有提示词
 	}
 	h := &Handler{cfg: cfg, mux: http.NewServeMux()}
-	h.mux.HandleFunc("POST /v1/chat/completions", h.withAuth(h.chatCompletions))
-	h.mux.HandleFunc("GET /v1/models", h.withAuth(h.models))
-	h.mux.HandleFunc("GET /status", h.withAuth(h.status))
+	h.mux.HandleFunc("POST /v1/chat/completions", h.withAPIKey(h.chatCompletions))
+	h.mux.HandleFunc("GET /v1/models", h.withAPIKey(h.models))
+	if cfg.ManagementAuth != nil {
+		h.mux.HandleFunc("GET /status", cfg.ManagementAuth(h.status))
+	}
 	h.mux.HandleFunc("GET /healthz", h.healthz)
 	if cfg.Panel != nil {
 		h.mux.Handle("/panel/", cfg.Panel) // /panel → /panel/ 由 ServeMux 自动重定向
@@ -156,9 +160,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
-func (h *Handler) withAuth(next http.HandlerFunc) http.HandlerFunc {
+func (h *Handler) withAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !httpauth.VerifyBearer(r, h.loadLive().APIKey) {
+		keys := h.loadLive().APIKeys
+		if len(keys) == 0 {
+			next(w, r)
+			return
+		}
+		token, ok := httpauth.BearerToken(r)
+		if !ok || !apikey.Verify(token, keys) {
 			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key", "missing or invalid API key")
 			return
 		}

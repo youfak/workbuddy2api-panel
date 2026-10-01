@@ -1,15 +1,19 @@
 package panel
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 )
 
 func newTestPanel() *Panel {
-	// 启用鉴权：未带 key 的请求一律 401，不进入依赖 Pool/Upstream 的 handler。
-	return New(Config{Version: "test", APIKey: "test-key"})
+	return New(Config{Version: "test"})
 }
 
 // 面板安全响应头必须覆盖：页面、静态脚本、鉴权失败响应。
@@ -127,20 +131,139 @@ func TestValidUID(t *testing.T) {
 	}
 }
 
-// 未带密钥的 API 请求必须 401；携带正确密钥则通过鉴权层（不再是 401）。
+// 面板不接受 Bearer AI 密钥，未登录请求必须被拒绝。
 func TestAuthLayerBehavior(t *testing.T) {
 	p := newTestPanel()
 	rec := httptest.NewRecorder()
 	p.ServeHTTP(rec, httptest.NewRequest("GET", "/panel/api/overview", nil))
 	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("no key: code=%d want 401", rec.Code)
+		t.Fatalf("no session: code=%d want 401", rec.Code)
 	}
-	// 用不存在的路由验证"带正确 key 已过鉴权"（避免触碰依赖 nil 的 handler）。
 	rec2 := httptest.NewRecorder()
 	req2 := httptest.NewRequest("GET", "/panel/api/nonexistent", nil)
-	req2.Header.Set("Authorization", "Bearer test-key")
+	req2.Header.Set("Authorization", "Bearer sk-ai-only")
 	p.ServeHTTP(rec2, req2)
-	if rec2.Code == http.StatusUnauthorized {
-		t.Error("valid key must pass the auth layer")
+	if rec2.Code != http.StatusNotFound {
+		t.Fatalf("unknown path code=%d want 404", rec2.Code)
+	}
+}
+
+func TestPanelSessionRejectsAPIKeyAndExpiresOnLogout(t *testing.T) {
+	var savedHash string
+	p := New(Config{
+		SavePanelPassword: func(hash string) error {
+			savedHash = hash
+			return nil
+		},
+	})
+
+	apiKeyRequest := httptest.NewRequest(http.MethodGet, "/panel/api/overview", nil)
+	apiKeyRequest.Header.Set("Authorization", "Bearer sk-ai-only")
+	apiKeyResult := httptest.NewRecorder()
+	p.ServeHTTP(apiKeyResult, apiKeyRequest)
+	if apiKeyResult.Code != http.StatusUnauthorized {
+		t.Fatalf("api key reached panel: code=%d", apiKeyResult.Code)
+	}
+
+	setup := httptest.NewRequest(http.MethodPost, "/panel/api/auth/setup", bytes.NewBufferString(`{"password":"correct-horse-battery-staple"}`))
+	setup.RemoteAddr = "127.0.0.1:41000"
+	setupResult := httptest.NewRecorder()
+	p.ServeHTTP(setupResult, setup)
+	if setupResult.Code != http.StatusOK || savedHash == "" {
+		t.Fatalf("setup code=%d body=%s hash=%q", setupResult.Code, setupResult.Body.String(), savedHash)
+	}
+	cookies := setupResult.Result().Cookies()
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
+		t.Fatalf("unsafe login cookie: %+v", cookies)
+	}
+
+	withSession := httptest.NewRequest(http.MethodGet, "/panel/api/config", nil)
+	withSession.AddCookie(cookies[0])
+	withSessionResult := httptest.NewRecorder()
+	p.ServeHTTP(withSessionResult, withSession)
+	if withSessionResult.Code == http.StatusUnauthorized {
+		t.Fatalf("session cookie was rejected: %s", withSessionResult.Body.String())
+	}
+
+	logout := httptest.NewRequest(http.MethodPost, "/panel/api/auth/logout", nil)
+	logout.AddCookie(cookies[0])
+	logoutResult := httptest.NewRecorder()
+	p.ServeHTTP(logoutResult, logout)
+	if logoutResult.Code != http.StatusOK {
+		t.Fatalf("logout code=%d body=%s", logoutResult.Code, logoutResult.Body.String())
+	}
+
+	afterLogout := httptest.NewRequest(http.MethodGet, "/panel/api/config", nil)
+	afterLogout.AddCookie(cookies[0])
+	afterLogoutResult := httptest.NewRecorder()
+	p.ServeHTTP(afterLogoutResult, afterLogout)
+	if afterLogoutResult.Code != http.StatusUnauthorized {
+		t.Fatalf("logged-out session code=%d want 401", afterLogoutResult.Code)
+	}
+}
+
+func TestAPIKeyManagerReturnsPlaintextOnlyOnCreate(t *testing.T) {
+	var records []apikey.Record
+	p := New(Config{
+		SavePanelPassword: func(string) error { return nil },
+		ListAPIKeys:       func() ([]apikey.PublicRecord, error) { return apikey.Public(records), nil },
+		CreateAPIKey: func(name string) (apikey.PublicRecord, string, error) {
+			record, plain, err := apikey.Create(name)
+			if err != nil {
+				return apikey.PublicRecord{}, "", err
+			}
+			records = append(records, record)
+			return apikey.Public([]apikey.Record{record})[0], plain, nil
+		},
+	})
+	setup := httptest.NewRequest(http.MethodPost, "/panel/api/auth/setup", bytes.NewBufferString(`{"password":"correct-horse-battery-staple"}`))
+	setup.RemoteAddr = "127.0.0.1:41000"
+	setupResult := httptest.NewRecorder()
+	p.ServeHTTP(setupResult, setup)
+	cookie := setupResult.Result().Cookies()[0]
+
+	create := httptest.NewRequest(http.MethodPost, "/panel/api/api-keys", bytes.NewBufferString(`{"name":"cli"}`))
+	create.AddCookie(cookie)
+	createResult := httptest.NewRecorder()
+	p.ServeHTTP(createResult, create)
+	if createResult.Code != http.StatusCreated {
+		t.Fatalf("create code=%d body=%s", createResult.Code, createResult.Body.String())
+	}
+	var created struct {
+		Key  string              `json:"key"`
+		Item apikey.PublicRecord `json:"item"`
+	}
+	if err := json.Unmarshal(createResult.Body.Bytes(), &created); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(created.Key, "sk-") || created.Item.Masked == created.Key {
+		t.Fatalf("created=%+v", created)
+	}
+
+	list := httptest.NewRequest(http.MethodGet, "/panel/api/api-keys", nil)
+	list.AddCookie(cookie)
+	listResult := httptest.NewRecorder()
+	p.ServeHTTP(listResult, list)
+	if listResult.Code != http.StatusOK || strings.Contains(listResult.Body.String(), created.Key) || strings.Contains(listResult.Body.String(), records[0].Hash) {
+		t.Fatalf("list leaked key material: code=%d body=%s", listResult.Code, listResult.Body.String())
+	}
+}
+
+func TestConfigResponseDoesNotExposeKeyHashes(t *testing.T) {
+	p := New(Config{
+		LoadConfig: func() (any, error) {
+			return map[string]any{
+				"api_keys": []map[string]string{{"id": "0123456789abcdef01234567", "hash": "secret-hash"}},
+				"panel":    map[string]string{"admin_password_hash": "secret-password-hash"},
+			}, nil
+		},
+	})
+	p.sessions["test-session"] = panelSession{expiresAt: time.Now().Add(time.Hour)}
+	req := httptest.NewRequest(http.MethodGet, "/panel/api/config", nil)
+	req.AddCookie(&http.Cookie{Name: panelSessionCookie, Value: "test-session"})
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "secret-hash") || strings.Contains(rec.Body.String(), "secret-password-hash") {
+		t.Fatalf("config response leaked secret: code=%d body=%s", rec.Code, rec.Body.String())
 	}
 }

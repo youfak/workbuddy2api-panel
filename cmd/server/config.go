@@ -2,8 +2,6 @@
 package main
 
 import (
-	"crypto/rand"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -12,19 +10,23 @@ import (
 	"strings"
 	"time"
 
+	"github.com/linguo2625469/workbuddy2api-panel/internal/apikey"
 	"github.com/linguo2625469/workbuddy2api-panel/internal/prompt"
 )
 
 // Config 顶层配置。
 type Config struct {
-	Listen    string `json:"listen"`     // ":7863"
-	APIKey    string `json:"api_key"`    // 空 = 不鉴权
-	AuthDir   string `json:"auth_dir"`   // ./auths
-	StateFile string `json:"state_file"` // ./data/state.json
+	Listen    string          `json:"listen"`     // ":7863"
+	AuthDir   string          `json:"auth_dir"`   // ./auths
+	StateFile string          `json:"state_file"` // ./data/state.json
+	APIKeys   []apikey.Record `json:"api_keys,omitempty"`
 
 	Panel struct {
 		// PackageDetailLimit 积分构成页单账号默认展示的最近到期包数；<=0 回落 5。
 		PackageDetailLimit int `json:"package_detail_limit"`
+		// AdminPasswordHash 是 WebUI 管理密码的 PBKDF2-HMAC-SHA256 编码哈希；
+		// 空表示尚未在本机完成首次设置，绝不向面板读取接口回显。
+		AdminPasswordHash string `json:"admin_password_hash,omitempty"`
 	} `json:"panel"`
 
 	Logging struct {
@@ -191,7 +193,6 @@ type Config struct {
 func Default() *Config {
 	c := &Config{
 		Listen:    ":7863",
-		APIKey:    "",
 		AuthDir:   "./auths",
 		StateFile: "./data/state.json",
 	}
@@ -293,45 +294,34 @@ func ParseConfig(raw []byte) (*Config, error) {
 }
 
 // WriteDefault 在 path 落一份推荐配置（首次运行自动生成，双击即开免手工复制样例）。
-// 值取自 Default()（含超时/熔断/签到排程等推荐值），api_key 用 crypto/rand 随机生成：
-// 安全默认优于示例占位符（listen 绑定 0.0.0.0，空 key 会把网关裸暴露给局域网）。
-// 返回生成的 key 供启动日志透出。已存在时经 O_EXCL 原子拒绝，绝不改写用户配置。
-func WriteDefault(path string) (string, error) {
-	raw := make([]byte, 18)
-	if _, err := rand.Read(raw); err != nil {
-		return "", fmt.Errorf("gen api_key: %w", err)
-	}
-	key := "sk-" + base64.RawURLEncoding.EncodeToString(raw)
+// 管理密码和 AI 密钥均由 WebUI 单独创建。已存在时经 O_EXCL 原子拒绝，绝不改写用户配置。
+func WriteDefault(path string) error {
 	c := Default()
-	c.APIKey = key
 	_ = c.normalize() // Default() 全合法，normalize 仅补齐 header/idle 超时的展示值
 	out, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal config: %w", err)
+		return fmt.Errorf("marshal config: %w", err)
 	}
 	if dir := filepath.Dir(path); dir != "" && dir != "." {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("mkdir config dir: %w", err)
+			return fmt.Errorf("mkdir config dir: %w", err)
 		}
 	}
 	// O_EXCL 原子拒绝覆盖：即使调用方漏判"不存在"，也绝不悄悄改写用户已有配置。
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return "", fmt.Errorf("write config: %w", err)
+		return fmt.Errorf("write config: %w", err)
 	}
 	defer f.Close()
 	if _, err := f.Write(out); err != nil {
-		return "", fmt.Errorf("write config: %w", err)
+		return fmt.Errorf("write config: %w", err)
 	}
-	return key, nil
+	return nil
 }
 
 func applyEnv(c *Config) {
 	if v := os.Getenv("WB2A_LISTEN"); v != "" {
 		c.Listen = v
-	}
-	if v := os.Getenv("WB2A_API_KEY"); v != "" {
-		c.APIKey = v
 	}
 	if v := os.Getenv("WB2A_AUTH_DIR"); v != "" {
 		c.AuthDir = v

@@ -75,24 +75,23 @@ func TestLoggingDefaults(t *testing.T) {
 func TestLoadFile(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
-	os.WriteFile(fp, []byte(`{"listen":":9999","api_key":"k"}`), 0o600)
+	os.WriteFile(fp, []byte(`{"listen":":9999"}`), 0o600)
 	c, err := Load(fp)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != ":9999" || c.APIKey != "k" {
+	if c.Listen != ":9999" {
 		t.Errorf("c=%+v", c)
 	}
 }
 
 func TestEnvOverride(t *testing.T) {
 	t.Setenv("WB2A_LISTEN", ":7777")
-	t.Setenv("WB2A_API_KEY", "envkey")
 	c, err := Load("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c.Listen != ":7777" || c.APIKey != "envkey" {
+	if c.Listen != ":7777" {
 		t.Errorf("c=%+v", c)
 	}
 }
@@ -581,24 +580,13 @@ func TestBadSessionTTL(t *testing.T) {
 func TestWriteDefault(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "sub", "config.json") // 顺带验证父目录自动创建
-	key, err := WriteDefault(fp)
-	if err != nil {
+	if err := WriteDefault(fp); err != nil {
 		t.Fatal(err)
 	}
-	// key 形如 sk-<24字符随机串>，两次生成不重复
-	if !strings.HasPrefix(key, "sk-") || len(key) < 20 {
-		t.Errorf("key=%q want sk-<random>", key)
-	}
-	if key2, _ := WriteDefault(filepath.Join(dir, "another.json")); key2 == key {
-		t.Errorf("two generated keys identical: %q", key)
-	}
-	// 落盘文件可被 Load 正常加载，推荐值齐备且 api_key 生效
+	// 落盘文件可被 Load 正常加载，推荐值齐备且管理密码和 AI 密钥均留待 WebUI 创建。
 	c, err := Load(fp)
 	if err != nil {
 		t.Fatalf("load generated config: %v", err)
-	}
-	if c.APIKey != key {
-		t.Errorf("api_key=%q want %q", c.APIKey, key)
 	}
 	if c.Listen != ":7863" || c.AuthDir != "./auths" || c.StateFile != "./data/state.json" {
 		t.Errorf("generated defaults off: %+v", c)
@@ -607,7 +595,7 @@ func TestWriteDefault(t *testing.T) {
 		t.Errorf("generated schedule off: %+v", c.Schedule)
 	}
 	// 已存在的文件不覆盖：二次写入同一路径必须报错
-	if _, err := WriteDefault(fp); err == nil {
+	if err := WriteDefault(fp); err == nil {
 		t.Error("WriteDefault must refuse to overwrite existing file")
 	}
 }
@@ -740,7 +728,7 @@ func TestPromptEnvOverride(t *testing.T) {
 func TestPromptLegacyConfigNoImpact(t *testing.T) {
 	dir := t.TempDir()
 	fp := filepath.Join(dir, "c.json")
-	os.WriteFile(fp, []byte(`{"listen":":9999","api_key":"k"}`), 0o600)
+	os.WriteFile(fp, []byte(`{"listen":":9999"}`), 0o600)
 	c, err := Load(fp)
 	if err != nil {
 		t.Fatal(err)
