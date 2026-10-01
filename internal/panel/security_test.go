@@ -213,6 +213,16 @@ func TestPanelSetupAllowsRemoteManagement(t *testing.T) {
 	}
 }
 
+func TestPanelSetupRejectsShortPasswordWithClearMessage(t *testing.T) {
+	p := New(Config{SavePanelPassword: func(string) error { return nil }})
+	req := httptest.NewRequest(http.MethodPost, "/panel/api/auth/setup", bytes.NewBufferString(`{"password":"short"}`))
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "至少 12 个字符") {
+		t.Fatalf("short password response: code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAPIKeyManagerReturnsPlaintextOnlyOnCreate(t *testing.T) {
 	var records []apikey.Record
 	p := New(Config{

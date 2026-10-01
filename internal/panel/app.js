@@ -179,6 +179,11 @@ function openKey(setup) {
 $('btnKey').onclick = async () => {
   const password = $('keyInput').value;
   if (!password) return;
+  if (panelSetupMode && (password.length < 12 || password.length > 256)) {
+    $('keyErr').textContent = '管理密码长度必须为至少 12 个字符且不超过 256 个字符。';
+    $('keyErr').hidden = false;
+    return;
+  }
   if (panelSetupMode && password !== $('keyConfirm').value) {
     $('keyErr').textContent = '两次输入的密码不一致。';
     $('keyErr').hidden = false;

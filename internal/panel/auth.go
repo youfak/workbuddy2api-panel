@@ -212,10 +212,10 @@ func readPassword(r *http.Request) (string, error) {
 
 func validatePanelPassword(password string) error {
 	if len(password) < 12 || len(password) > 256 {
-		return fmt.Errorf("panel password must be 12 to 256 bytes")
+		return fmt.Errorf("管理密码长度必须为至少 12 个字符且不超过 256 个字符")
 	}
 	if strings.TrimSpace(password) == "" {
-		return fmt.Errorf("panel password must not be blank")
+		return fmt.Errorf("管理密码不能为空")
 	}
 	return nil
 }
