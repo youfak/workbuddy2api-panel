@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -60,12 +59,8 @@ func (p *Panel) authStatus(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// authSetup 只在没有管理密码时允许本机调用，避免远程请求抢占首次管理员账号。
+// authSetup 只在尚未配置管理密码时可调用，成功后立即关闭首次设置入口。
 func (p *Panel) authSetup(w http.ResponseWriter, r *http.Request) {
-	if !isLoopbackRequest(r) {
-		writeErr(w, http.StatusForbidden, "panel_setup_is_local_only")
-		return
-	}
 	password, err := readPassword(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err.Error())
@@ -284,13 +279,4 @@ func randomPanelSessionID() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(raw), nil
-}
-
-func isLoopbackRequest(r *http.Request) bool {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		host = r.RemoteAddr
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
 }

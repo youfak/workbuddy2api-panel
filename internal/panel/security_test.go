@@ -202,6 +202,17 @@ func TestPanelSessionRejectsAPIKeyAndExpiresOnLogout(t *testing.T) {
 	}
 }
 
+func TestPanelSetupAllowsRemoteManagement(t *testing.T) {
+	p := New(Config{SavePanelPassword: func(string) error { return nil }})
+	req := httptest.NewRequest(http.MethodPost, "/panel/api/auth/setup", bytes.NewBufferString(`{"password":"correct-horse-battery-staple"}`))
+	req.RemoteAddr = "198.51.100.10:41000"
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("remote setup code=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestAPIKeyManagerReturnsPlaintextOnlyOnCreate(t *testing.T) {
 	var records []apikey.Record
 	p := New(Config{

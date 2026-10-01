@@ -226,7 +226,7 @@ CI 会自动构建多架构镜像（`amd64` / `arm64`）并发布到 GHCR，`git
 ```bash
 # 1. 准备配置与数据目录
 mkdir -p auths data && cp config.example.json config.json
-#    首次在服务本机进入 WebUI 设置管理密码，再在「配置」管理 AI 密钥
+#    首次进入 WebUI 设置管理密码，再在「配置」管理 AI 密钥
 
 # 2. 拉取并运行
 docker run -d --name workbuddy2api \
@@ -253,7 +253,7 @@ cd workbuddy2api-panel
 
 # 2. 准备配置（compose 挂载此文件，缺失会导致容器启动失败）
 cp config.example.json config.json
-#    首次在服务本机进入 WebUI 设置管理密码，再在「配置」管理 AI 密钥
+#    首次进入 WebUI 设置管理密码，再在「配置」管理 AI 密钥
 
 # 3. 启动（首次会构建镜像，约 1-2 分钟）
 docker compose up -d --build
@@ -549,7 +549,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 http://127.0.0.1:7863/panel/
 ```
 
-首次从服务所在机器的 `http://127.0.0.1:7863/panel/` 访问时，请设置管理密码。面板使用 HttpOnly Cookie 登录，AI `sk-` 密钥不会用于面板登录或写入浏览器持久化存储。在「配置」中可创建、查看掩码或删除 AI 密钥；完整 `sk-` 仅在创建响应中显示一次，配置文件只保存哈希。
+首次访问 WebUI 时请设置管理密码。面板使用 HttpOnly Cookie 登录，AI `sk-` 密钥不会用于面板登录或写入浏览器持久化存储。在「配置」中可创建、查看掩码或删除 AI 密钥；完整 `sk-` 仅在创建响应中显示一次，配置文件只保存哈希。
 界面支持**明暗主题切换**（首次跟随系统偏好，点击按钮两态翻转并记住选择），左侧导航分四个视图：
 
 | 视图 | 功能 |

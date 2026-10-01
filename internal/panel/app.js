@@ -166,7 +166,7 @@ let panelSetupMode = false;
 function openKey(setup) {
   panelSetupMode = !!setup;
   $('keyTitle').textContent = panelSetupMode ? '设置管理密码' : '登录管理面板';
-  $('keyHint').textContent = panelSetupMode ? '首次设置仅限服务所在机器访问，密码至少 12 位。' : '请输入管理密码。';
+  $('keyHint').textContent = panelSetupMode ? '首次设置管理密码，密码至少 12 位。' : '请输入管理密码。';
   $('keyInput').placeholder = panelSetupMode ? '设置管理密码（至少 12 位）' : '管理密码';
   $('keyInput').autocomplete = panelSetupMode ? 'new-password' : 'current-password';
   $('keyConfirm').hidden = !panelSetupMode;
