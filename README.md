@@ -353,7 +353,7 @@ curl -s http://localhost:7863/v1/chat/completions \
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | `listen` | `:7863` | HTTP 监听地址 |
-| `api_keys` | 空 | WebUI 管理的 AI 密钥哈希列表。创建时仅一次返回完整 `sk-`，之后只显示掩码；没有密钥时 `/v1/*` 不鉴权 |
+| `api_keys` | 空 | WebUI 管理的 AI 密钥哈希列表。创建时仅一次返回完整 `sk-`，之后只显示掩码；**一个密钥都没创建时 `/v1/*` 一律 401（fail closed，不会匿名放行）** |
 | `auth_dir` | `./auths` | 账号凭证目录 |
 | `state_file` | `./data/state.json` | 账号池状态持久化文件 |
 | `server.read_timeout` | `300s` | 入站请求读取（含 body 上传）总时长上限；大上下文/文件块经反代转发超时会 400 `read body: i/o timeout`；`0` = 不限制；改动需重启（#100） |
@@ -636,12 +636,12 @@ http://127.0.0.1:7863/panel/
 
 | 端点 | 鉴权 | 说明 |
 |---|---|---|
-| `POST /v1/chat/completions` | Bearer（已创建 AI 密钥时） | OpenAI 兼容补全；流式/非流式；请求体上限 8 MiB |
-| `GET /v1/models` | Bearer（已创建 AI 密钥时） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
+| `POST /v1/chat/completions` | Bearer（必填） | OpenAI 兼容补全；流式/非流式；请求体上限 8 MiB |
+| `GET /v1/models` | Bearer（必填） | 模型列表（纯动态拉取，缓存 1h；失败返回空列表 + 5min 负缓存）；每模型带 `context_length`/`max_output_tokens`（四级查找链：上游目录 → 内置知识表 → model.json 缓存 → models.dev）、`reasoning_supported_efforts`/`reasoning_default_effort` 思考档位及描述/标签/倍率等全字段（上游有返回时） |
 | `GET /status` | 管理员会话 | 账号状态汇总 + 每账号详情（积分/冷却/熔断/在途/粘性）+ `model_locks`（按「域 + 模型」聚合的限流视图：可选 / 总数、锁定账号数、`state`、最早解锁与全池解锁时间、限流原因；无锁定为空） |
 | `GET /healthz` | 无 | 健康检查：有 healthy 且未占满账号返回 200，否则 503；响应带身份标识（见下） |
 
-> 鉴权规则：创建任意 AI 密钥后，`/v1/*` 校验 `Authorization: Bearer <sk-...>`；未创建时 `/v1/*` 直接放行。`/status` 仅接受 WebUI 管理员会话；`/healthz` 恒无鉴权。
+> 鉴权规则：`/v1/*` 校验 `Authorization: Bearer <sk-...>` 并与 WebUI 管理的 AI 密钥哈希比对；**未配置任何密钥时一律 401（fail closed）**，不会因为"还没建密钥"而匿名放行——首次部署顺序是「设管理密码 → 创建 AI 密钥 → 再对外开端口」。`/status` 仅接受 WebUI 管理员会话；`/healthz` 恒无鉴权。
 
 `/healthz` 响应示例（200 / 503 同结构，仅状态码与计数变化）：
 

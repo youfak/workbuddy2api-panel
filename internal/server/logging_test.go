@@ -116,13 +116,13 @@ func TestRequestMetricsRecordsStream(t *testing.T) {
 		return 200, sseOK, true
 	})
 	reqLog := reqlog.New(reqlog.Config{})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:       testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream:   up,
 		RequestLog: reqLog,
 	})
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
+	req := v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -147,13 +147,13 @@ func TestRequestMetricsCapturesClientInfo(t *testing.T) {
 		return 200, sseOK, true
 	})
 	reqLog := reqlog.New(reqlog.Config{})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:             testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream:         up,
 		RequestLog:       reqLog,
 		RecordClientInfo: true,
 	})
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
+	req := v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
 	req.Header.Set("X-Forwarded-For", "203.0.113.7, 10.0.0.1")
 	req.Header.Set("User-Agent", "python-requests/2.31.0")
@@ -180,12 +180,12 @@ func TestRequestMetricsClientInfoDisabled(t *testing.T) {
 		return 200, sseOK, true
 	})
 	reqLog := reqlog.New(reqlog.Config{})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:       testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream:   up,
 		RequestLog: reqLog,
 	})
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
+	req := v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
 	req.Header.Set("X-Forwarded-For", "203.0.113.7")
 	req.Header.Set("User-Agent", "python-requests/2.31.0")
@@ -204,7 +204,7 @@ func TestRequestMetricsClientInfoDisabled(t *testing.T) {
 
 // 无代理头时回落到 TCP 对端地址——直连部署下这是唯一来源线索。
 func TestClientIPForLogFallsBackToRemoteAddr(t *testing.T) {
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := v1Req("POST", "/v1/chat/completions", nil)
 	req.RemoteAddr = "198.51.100.9:54321"
 	if got := clientIPForLog(req); got != "198.51.100.9" {
 		t.Errorf("got %q want 198.51.100.9", got)
@@ -226,7 +226,7 @@ func TestClientIPForLogFallsBackToRemoteAddr(t *testing.T) {
 // 超长 UA 落盘前截断：UA 是客户端可控自由文本，不截断会把归档行撑爆。
 func TestCaptureClientInfoTruncatesUserAgent(t *testing.T) {
 	tr := &requestTrace{}
-	req := httptest.NewRequest("POST", "/v1/chat/completions", nil)
+	req := v1Req("POST", "/v1/chat/completions", nil)
 	req.RemoteAddr = "198.51.100.9:1234"
 	req.Header.Set("User-Agent", strings.Repeat("A", 5000))
 	tr.captureClientInfo(req)
@@ -241,13 +241,13 @@ func TestRequestMetricsDetectsStreamErrorFrame(t *testing.T) {
 		return 200, sseErr, true
 	})
 	reqLog := reqlog.New(reqlog.Config{})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:       testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream:   up,
 		RequestLog: reqLog,
 	})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`)))
 	s := reqLog.Snapshot()
 	if len(s.Recent) != 1 || s.Recent[0].Outcome != reqlog.OutcomeStreamError || s.Recent[0].OK {
@@ -395,13 +395,13 @@ func TestChatLogsStreamRow(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
 	})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
+		req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Fatalf("code=%d", rec.Code)
@@ -422,13 +422,13 @@ func TestChatLogsSyncRowTTFBDash(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
 	})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+		req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 200 {
 			t.Fatalf("code=%d", rec.Code)
@@ -447,10 +447,10 @@ func TestChatLogsErrorRow(t *testing.T) {
 		return 402, `{"code":1,"msg":"余额不足"}`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	out := captureStdout(t, func() {
 		rec := httptest.NewRecorder()
-		req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+		req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 		h.ServeHTTP(rec, req)
 		if rec.Code != 503 {
 			t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
@@ -466,7 +466,7 @@ func TestChatLogsErrorRow(t *testing.T) {
 func TestHealthzDoesNotLogTableRow(t *testing.T) {
 	withChatLog(t) // 日志开启也应无表格行：非 chat 路由根本不走 logChatRow
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: newFakeUpstream(t, func(string) (int, string, bool) {
+	h := testV1Handler(Config{Pool: p, Upstream: newFakeUpstream(t, func(string) (int, string, bool) {
 		return 200, sseOK, true
 	})})
 	out := captureStdout(t, func() {
@@ -476,7 +476,7 @@ func TestHealthzDoesNotLogTableRow(t *testing.T) {
 			t.Fatalf("code=%d", rec.Code)
 		}
 		rec2 := httptest.NewRecorder()
-		h.ServeHTTP(rec2, httptest.NewRequest("GET", "/v1/models", nil))
+		h.ServeHTTP(rec2, v1Req("GET", "/v1/models", nil))
 		rec3 := httptest.NewRecorder()
 		h.ServeHTTP(rec3, httptest.NewRequest("GET", "/status", nil))
 	})

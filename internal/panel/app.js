@@ -1122,7 +1122,7 @@ let createdAIKey = '';
 function renderAPIKeys(keys) {
   $('aiKeyBody').innerHTML = (keys || []).map(k => '<tr><td>' + esc(k.name) + '</td><td><code>' + esc(k.masked) +
     '</code></td><td>' + esc(ago(k.created_at)) + '</td><td><button class="xs" data-delete-ai-key="' + esc(k.id) + '">删除</button></td></tr>').join('') ||
-    '<tr><td colspan="4" class="empty">尚未创建 AI 密钥</td></tr>';
+    '<tr><td colspan="4" class="empty">尚未创建 AI 密钥：/v1/* 会拒绝全部请求，请先创建一个</td></tr>';
   document.querySelectorAll('[data-delete-ai-key]').forEach(btn => {
     btn.onclick = async () => {
       if (!confirm('删除该 AI 密钥后，使用它的客户端将立即无法访问 AI 接口。是否继续？')) return;

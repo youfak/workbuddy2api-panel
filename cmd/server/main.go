@@ -408,6 +408,11 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
+	// /v1/* 是 fail closed 的：一个密钥都没配就全拒。启动即告警，避免"服务跑起来了、
+	// 客户端却全 401"这种要翻日志才能定位的哑火（旧行为是空密钥直接放行，属漏洞）。
+	if len(live.Load().APIKeys) == 0 {
+		log.Printf("WARN: 未配置任何 AI 密钥，/v1/* 将拒绝全部请求（fail closed）；请登录面板「AI 密钥」视图创建")
+	}
 	log.Printf("workbuddy2api listening on %s，管理面板 http://127.0.0.1%s/panel/", cfg.Listen, panelListenPath(cfg.Listen))
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("http: %v", err)

@@ -126,12 +126,12 @@ func TestChatLargeBodyNoGatewayLimit(t *testing.T) {
 		return 200, sseOK, true
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 
 	pad := strings.Repeat("a", 4<<20) // 4MB 合法 JSON 字符串值
 	body := []byte(`{"model":"glm-5.2","messages":[],"pad":"` + pad + `"}`)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", bytes.NewReader(body)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", bytes.NewReader(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s (large valid body must proceed)", rec.Code, rec.Body)
 	}
@@ -155,9 +155,9 @@ func TestChatBadParamsFailsFastWithoutPenalty(t *testing.T) {
 	)
 	p.SetCredits("bad", 2000, 0) // 确定性源 r=0 → 先选 bad
 	p.SetCredits("good", 1000, 0)
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("code=%d body=%s (want 400: request-level error must not be retried on other accounts)", rec.Code, rec.Body)
 	}
@@ -178,9 +178,9 @@ func TestChatBadParams400CarriesUpstreamBody(t *testing.T) {
 		return 400, `{"code":11101,"msg":"Unmarshal chat params failed with error: unexpected EOF"}`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 400 {
 		t.Fatalf("code=%d body=%s (want 400)", rec.Code, rec.Body)
 	}
@@ -201,11 +201,11 @@ func TestChatNonStreamAggregates(t *testing.T) {
 		}
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
 	})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -239,11 +239,11 @@ func TestChatStreamPassthrough(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
 	})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -282,7 +282,7 @@ func TestChatRecordsCreditForStreamAndSync(t *testing.T) {
 				return 200, sseCredit, true
 			})
 			rec := usage.New("")
-			h := NewHandler(Config{
+			h := testV1Handler(Config{
 				Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 				Upstream: up,
 				Usage:    rec,
@@ -292,7 +292,7 @@ func TestChatRecordsCreditForStreamAndSync(t *testing.T) {
 				body = `{"model":"glm-5.2","stream":true,"messages":[]}`
 			}
 			recorder := httptest.NewRecorder()
-			h.ServeHTTP(recorder, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+			h.ServeHTTP(recorder, v1Req("POST", "/v1/chat/completions", strings.NewReader(body)))
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("code=%d body=%s", recorder.Code, recorder.Body)
 			}
@@ -324,8 +324,8 @@ func TestChatRotatesOnHardCredit(t *testing.T) {
 	// 让 bad 积分更高被先选中
 	p.SetCredits("bad", 2000, 0)
 	p.SetCredits("good", 1000, 0)
-	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	h := testV1Handler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -368,10 +368,10 @@ func TestChatSoftCoolsOnRateLimitBody(t *testing.T) {
 	p.SetCredits("bad", 2000, 0)
 	p.SetCredits("good", 1000, 0)
 	const soft = 45 * time.Second
-	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: soft})
+	h := testV1Handler(Config{Pool: p, Upstream: up, SoftCooldown: soft})
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
@@ -390,7 +390,7 @@ func TestChatSoftCoolsOnRateLimitBody(t *testing.T) {
 	// 冷却生效：同一账号在冷却期内不得再被选中。
 	before := calls["Bearer at-bad"]
 	rec2 := httptest.NewRecorder()
-	h.ServeHTTP(rec2, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec2, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec2.Code != 200 {
 		t.Fatalf("second code=%d body=%s", rec2.Code, rec2.Body)
 	}
@@ -406,7 +406,7 @@ func TestApplyErrorPolicySoftRateExponentialBackoff(t *testing.T) {
 	// 的调用形态：连续 3 次软限流错误 → 首次 600s，后续不延长。
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	h := NewHandler(Config{Pool: p, SoftCooldown: 600 * time.Second})
+	h := testV1Handler(Config{Pool: p, SoftCooldown: 600 * time.Second})
 
 	for i := 1; i <= 3; i++ {
 		h.applyErrorPolicy("u1", upstream.ErrSoftRate, "", "", nil)
@@ -429,7 +429,7 @@ func TestApplyErrorPolicyNotFoundUsesFixedBase(t *testing.T) {
 	//（不堆加、不喂熔断），成功后自然到期恢复。
 	p := pool.New("")
 	p.Add(&auth.Auth{UID: "u1"})
-	h := NewHandler(Config{Pool: p, SoftCooldown: 20 * time.Minute}) // soft_rate 配得很大，验证 404 不受其影响
+	h := testV1Handler(Config{Pool: p, SoftCooldown: 20 * time.Minute}) // soft_rate 配得很大，验证 404 不受其影响
 
 	notFoundSec := int64(notFoundCooldown / time.Second)
 	for i := 1; i <= 3; i++ {
@@ -463,10 +463,10 @@ func TestNewHandlerSoftCooldownDefault(t *testing.T) {
 	)
 	p.SetCredits("bad", 2000, 0)
 	p.SetCredits("good", 1000, 0)
-	h := NewHandler(Config{Pool: p, Upstream: up}) // 不注入 SoftCooldown
+	h := testV1Handler(Config{Pool: p, Upstream: up}) // 不注入 SoftCooldown
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
@@ -498,7 +498,7 @@ func TestChatStickyFollowsFinalSuccess(t *testing.T) {
 		}
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:         p,
 		Upstream:     up,
 		Session:      sess,
@@ -506,7 +506,7 @@ func TestChatStickyFollowsFinalSuccess(t *testing.T) {
 	})
 	// 预绑定：sess.Bind("conv-1", "bad")，然后请求体带同 conversation_id。
 	sess.Bind("conv-1", "bad")
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -530,9 +530,9 @@ func TestChatStickySuccessKeepsBinding(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{Pool: p, Upstream: up, Session: sess, SoftCooldown: time.Minute})
+	h := testV1Handler(Config{Pool: p, Upstream: up, Session: sess, SoftCooldown: time.Minute})
 	sess.Bind("conv-1", "good")
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -563,14 +563,14 @@ func TestChatStickyFullFallsBackToRotation(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 200, sseOK, true
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:         p,
 		Upstream:     up,
 		Session:      sess,
 		SoftCooldown: time.Minute,
 	})
 	sess.Bind("conv-1", "bad")
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[],"metadata":{"conversation_id":"conv-1"}}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -596,8 +596,8 @@ func TestChatHardCreditCooldownUntilNextDay4AM(t *testing.T) {
 	)
 	p.SetCredits("bad", 2000, 0) // bad 积分高，确定性源 → 先被选中
 	p.SetCredits("good", 1000, 0)
-	h := NewHandler(Config{Pool: p, Upstream: up})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	h := testV1Handler(Config{Pool: p, Upstream: up})
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -638,9 +638,9 @@ func TestChat429Code14018UsesHardCreditCooldown(t *testing.T) {
 	)
 	p.SetCredits("bad", 2000, 2000)
 	p.SetCredits("good", 1000, 1000)
-	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
+	h := testV1Handler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -678,8 +678,8 @@ func TestChat6004ModelResetCoolsToParsedTime(t *testing.T) {
 	p.SetCredits("bad", 2000, 0)
 	p.SetCredits("good", 1000, 0)
 	// 隔离对 breaker 的干扰：熔断阈值默认 3，一次失败不触发。
-	h := NewHandler(Config{Pool: p, Upstream: up})
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
+	h := testV1Handler(Config{Pool: p, Upstream: up})
+	req := v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.3","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -728,9 +728,9 @@ func TestChat6004WithoutResetFallsBackToBackoff(t *testing.T) {
 	)
 	p.SetCredits("bad", 2000, 0)
 	p.SetCredits("good", 1000, 0)
-	h := NewHandler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
+	h := testV1Handler(Config{Pool: p, Upstream: up, SoftCooldown: time.Minute})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.3","messages":[]}`)))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
@@ -752,11 +752,11 @@ func TestChatAllUnavailableReturns503(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 402, `{"code":1,"msg":"余额不足"}`, false
 	})
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999}),
 		Upstream: up,
 	})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 503 {
@@ -774,8 +774,8 @@ func TestChatSessionDeadDisables(t *testing.T) {
 		return 401, `{"code":12153,"msg":"Offline user session not found"}`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
+	h := testV1Handler(Config{Pool: p, Upstream: up})
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 503 {
@@ -797,9 +797,9 @@ func TestChatTransportErrorDoesNotPenalize(t *testing.T) {
 		BillingBaseCN: "https://fake.example",
 	}
 	// 传输错误不喂熔断计数：一次 transport error 不应累计 errTotal 也不应熔断。
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 503 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
@@ -816,9 +816,9 @@ func TestChatHTTP5xxPenalizes(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 500, `{"code":500}`, false
 	})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 503 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
@@ -833,9 +833,9 @@ func TestChatHTTP4xxClientDoesNotPenalize(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 400, `{"code":400,"msg":"bad request"}`, false
 	})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(`{"model":"glm-5.2","messages":[]}`)))
 	if rec.Code != 503 {
 		t.Fatalf("code=%d body=%s", rec.Code, rec.Body)
 	}
@@ -846,8 +846,8 @@ func TestChatHTTP4xxClientDoesNotPenalize(t *testing.T) {
 }
 
 func TestModelsEndpoint(t *testing.T) {
-	h := NewHandler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
-	req := httptest.NewRequest("GET", "/v1/models", nil)
+	h := testV1Handler(Config{Pool: testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}), Upstream: upstream.New()})
+	req := v1Req("GET", "/v1/models", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != 200 {
@@ -886,9 +886,9 @@ func TestModelsDynamic(t *testing.T) {
 		return 200, `{"code":0,"data":{"models":[{"id":"dyn-model-a","maxInputTokens":65536,"maxOutputTokens":8192,"reasoning":{"effort":"medium","supportedEfforts":["low","medium","high"]}},{"id":"dyn-model-b","maxInputTokens":131072,"maxOutputTokens":16384},{"id":"glm-9.9","maxInputTokens":262144,"maxOutputTokens":32768}],"agents":[{"name":"cli","models":["dyn-model-a","dyn-model-b","glm-9.9"]}]}}`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	h.ServeHTTP(rec, v1Req("GET", "/v1/models", nil))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d", rec.Code)
 	}
@@ -965,9 +965,9 @@ func TestModelsDynamicFallsBackToStatic(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 500, `boom`, false
 	})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	h.ServeHTTP(rec, v1Req("GET", "/v1/models", nil))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d", rec.Code)
 	}
@@ -993,9 +993,9 @@ func TestModelsFetchFailurePenalizesAccount(t *testing.T) {
 	up := newFakeUpstream(t, func(authz string) (int, string, bool) {
 		return 500, `boom`, false
 	})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	h.ServeHTTP(rec, v1Req("GET", "/v1/models", nil))
 	if rec.Code != 200 {
 		t.Fatalf("code=%d", rec.Code)
 	}
@@ -1018,13 +1018,13 @@ func TestModelsNegativeCacheOnFetchFailure(t *testing.T) {
 		return 500, `boom`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up})
+	h := testV1Handler(Config{Pool: p, Upstream: up})
 
 	// 连续 3 次请求，上游持续 500 → 只应触发 1 次 fetch（负缓存生效），
 	// 纯动态下空列表仍返回 200。
 	for i := 0; i < 3; i++ {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+		h.ServeHTTP(rec, v1Req("GET", "/v1/models", nil))
 		if rec.Code != 200 {
 			t.Fatalf("req %d: code=%d body=%s", i, rec.Code, rec.Body)
 		}
@@ -1039,7 +1039,7 @@ func TestModelsNegativeCacheOnFetchFailure(t *testing.T) {
 	dynamicModelsCache.lastFail = time.Now().Add(-10 * time.Minute)
 	dynamicModelsCache.Unlock()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("GET", "/v1/models", nil))
+	h.ServeHTTP(rec, v1Req("GET", "/v1/models", nil))
 	if rec.Code != 200 {
 		t.Fatalf("after cooldown: code=%d", rec.Code)
 	}
@@ -1058,7 +1058,7 @@ func TestAPIKeyAuth(t *testing.T) {
 		Upstream: upstream.New(),
 		Live:     livecfg.New(livecfg.Snapshot{APIKeys: []apikey.Record{record}}),
 	})
-	// 无 key
+	// 无 key（刻意不带 Authorization：这一条验的就是"缺头即拒"）
 	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1083,10 +1083,45 @@ func TestAPIKeyAuth(t *testing.T) {
 	}
 }
 
+// TestAPIKeyAuthFailsClosedWithoutKeys 空 api_keys 必须一律拒绝（fail closed）。
+// 旧行为是"一个密钥都没配就放行"，等于把漏建密钥的实例对整个网络敞开：谁拿到
+// 地址都能白嫖账号额度，且日志里全是成功记录、看不出异常。这条钉死不放行。
+func TestAPIKeyAuthFailsClosedWithoutKeys(t *testing.T) {
+	h := NewHandler(Config{
+		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
+		Upstream: upstream.New(),
+		// Live 缺省（空快照）= 没有配置任何 AI 密钥
+	})
+	cases := []struct{ method, path, body string }{
+		{"GET", "/v1/models", ""},
+		{"POST", "/v1/chat/completions", `{"model":"glm-5.2","messages":[]}`},
+	}
+	for _, c := range cases {
+		for _, hdr := range []string{"", "Bearer sk-made-up"} {
+			var body io.Reader
+			if c.body != "" {
+				body = strings.NewReader(c.body)
+			}
+			req := httptest.NewRequest(c.method, c.path, body)
+			if hdr != "" {
+				req.Header.Set("Authorization", hdr)
+			}
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("%s %s hdr=%q: code=%d want 401（空 api_keys 不得放行）", c.method, c.path, hdr, rec.Code)
+			}
+			if !strings.Contains(rec.Body.String(), "no API key configured") {
+				t.Errorf("%s %s hdr=%q: 错误文案没说明未配置密钥：%s", c.method, c.path, hdr, rec.Body)
+			}
+		}
+	}
+}
+
 func TestStatusEndpoint(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", Nickname: "nick", AccessToken: "at", ExpiresAt: 9999999999})
 	p.SetCredits("u1", 42, 0)
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	req := httptest.NewRequest("GET", "/status", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1129,7 +1164,7 @@ func TestStatusInFlightFull(t *testing.T) {
 	p.Acquire("full")
 	defer p.Release("full")
 
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	if rec.Code != 200 {
@@ -1154,7 +1189,7 @@ func TestStatusPortraitFields(t *testing.T) {
 	p.NoteSuccess("u1")
 	p.NoteError("u1") // 记录 last_err + err_total（累计，不冷却）
 	p.Cooldown("u1", pool.CoolSoft, time.Hour, "429 rate limit")
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	if rec.Code != 200 {
@@ -1189,7 +1224,7 @@ func TestStatusPortraitFields(t *testing.T) {
 
 // TestHealthzEmptyPool 空池（healthy=0）→ 503，表示暂不可服务。
 func TestHealthzEmptyPool(t *testing.T) {
-	h := NewHandler(Config{Pool: pool.New(""), Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: pool.New(""), Upstream: upstream.New()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1208,7 +1243,7 @@ func TestHealthzEmptyPool(t *testing.T) {
 func TestHealthz503WhenNoHealthy(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
 	p.Disable("u1", "session dead")
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1238,7 +1273,7 @@ func TestHealthz503WhenAllInFlightFull(t *testing.T) {
 	if p.ServableNow() {
 		t.Fatal("servable should be false when the only healthy account is in-flight full")
 	}
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != http.StatusServiceUnavailable {
@@ -1257,7 +1292,7 @@ func TestHealthz503WhenAllInFlightFull(t *testing.T) {
 // TestHealthz200WhenHealthy 有健康账号 → 200。
 func TestHealthz200WithHealthy(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 	if rec.Code != http.StatusOK {
@@ -1288,7 +1323,7 @@ func TestHealthzServiceIdentity(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
 			tc.setup(p)
-			h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+			h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, httptest.NewRequest("GET", "/healthz", nil))
 			if rec.Code != tc.wantCode {
@@ -1310,7 +1345,7 @@ func TestHealthzServiceIdentity(t *testing.T) {
 
 // TestHealthzServiceIdentityWithoutAuth /healthz 保持无鉴权（负载均衡友好）。
 func TestHealthzServiceIdentityWithoutAuth(t *testing.T) {
-	h := NewHandler(Config{
+	h := testV1Handler(Config{
 		Pool:     testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999}),
 		Upstream: upstream.New(),
 	})
@@ -1326,7 +1361,7 @@ func TestHealthzServiceIdentityWithoutAuth(t *testing.T) {
 
 func TestStatusIsNotMountedWithoutManagementWrapper(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", Nickname: "nick", AccessToken: "at", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 
 	// 未注入管理会话时不挂载状态端点，避免 AI 密钥或匿名请求读取管理数据。
 	rec := httptest.NewRecorder()
@@ -1369,9 +1404,9 @@ func TestContentBlockedTriggersDegradedRetry(t *testing.T) {
 		ChatBaseCN: "https://fake.example",
 	}
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
+	h := testV1Handler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
 
-	req := httptest.NewRequest("POST", "/v1/chat/completions",
+	req := v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"system","content":"原始指纹"},{"role":"user","content":"hi"}]}`))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -1401,11 +1436,11 @@ func TestContentBlockedStickyDegraded(t *testing.T) {
 		return 200, sseOK, true
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
+	h := testV1Handler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
 
 	// 首请求触发降级 → 200。
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","stream":true,"messages":[{"role":"system","content":"x"},{"role":"user","content":"hi"}]}`)))
 	if rec.Code != 200 {
 		t.Fatalf("first req code=%d", rec.Code)
@@ -1426,10 +1461,10 @@ func TestContentBlockedCustomModeDoesNotDegrade(t *testing.T) {
 		return 400, `{"code":11128,"msg":"blocked by security policy"}`, false
 	})
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "custom", PromptText: "SYS"})
+	h := testV1Handler(Config{Pool: p, Upstream: up, PromptMode: "custom", PromptText: "SYS"})
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"system","content":"old"},{"role":"user","content":"hi"}]}`)))
 	// custom 模式下仍拦 → 400 content_blocked（内容终态，换号无意义），不降级重试。
 	if rec.Code != 400 {
@@ -1467,10 +1502,10 @@ func TestContentBlockedDoesNotPenalizeAccount(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
 	// 熔断阈值 1：若误罚 NoteError 一次即熔断；content_blocked 不应喂熔断。
 	p.SetBreaker(1, time.Hour, time.Hour)
-	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
+	h := testV1Handler(Config{Pool: p, Upstream: up, PromptMode: "passthrough"})
 
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions",
 		strings.NewReader(`{"model":"glm-5.2","messages":[{"role":"user","content":"hi"}]}`)))
 
 	st, _ := p.Status("u1")
@@ -1504,10 +1539,10 @@ func TestCustomModeFingerprintSanitizePreserved(t *testing.T) {
 	up.SanitizeFingerprints.Store(true) // 开启清洗层（与生产一致）
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at1", ExpiresAt: 9999999999})
 	const customSys = "我是网关自有提示词"
-	h := NewHandler(Config{Pool: p, Upstream: up, PromptMode: "custom", PromptText: customSys})
+	h := testV1Handler(Config{Pool: p, Upstream: up, PromptMode: "custom", PromptText: customSys})
 
 	// user 消息含 Claude Code 指纹句（PR39 的 fixture 串，逐字精确指纹）。
-	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(`{
+	req := v1Req("POST", "/v1/chat/completions", strings.NewReader(`{
 		"model":"glm-5.2",
 		"stream":true,
 		"messages":[

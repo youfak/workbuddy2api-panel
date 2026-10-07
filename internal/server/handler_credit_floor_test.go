@@ -18,7 +18,7 @@ import (
 func TestStatusCreditFloor(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
 	p.SetCreditFloor(100)
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	if rec.Code != 200 {
@@ -36,7 +36,7 @@ func TestStatusCreditFloor(t *testing.T) {
 // TestStatusCreditFloorZeroOff 未配置（默认 0）同样透出 0（显式写出，零值不省略）。
 func TestStatusCreditFloorZeroOff(t *testing.T) {
 	p := testPoolWith(&auth.Auth{UID: "u1", AccessToken: "at", ExpiresAt: 9999999999})
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New(), ManagementAuth: allowManagement})
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest("GET", "/status", nil))
 	var body map[string]any
@@ -74,9 +74,9 @@ func TestCreditFloorBlocksPaidRequest(t *testing.T) {
 		t.Fatalf("floor 应在 pool 层拦住触底号，got %v（拦截必须发生在选号层，而非靠上游报错）", a.UID)
 	}
 
-	h := NewHandler(Config{Pool: p, Upstream: upstream.New()})
+	h := testV1Handler(Config{Pool: p, Upstream: upstream.New()})
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(body)))
+	h.ServeHTTP(rec, v1Req("POST", "/v1/chat/completions", strings.NewReader(body)))
 	if rec.Code != 503 {
 		t.Fatalf("code=%d want 503（全池触底 + 收费模型 → 不放行）, body=%s", rec.Code, rec.Body)
 	}

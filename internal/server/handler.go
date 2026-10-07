@@ -172,11 +172,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
 }
 
+// withAPIKey 是 /v1/* 的访问闸门，**fail closed**：一个密钥都没配好时一律拒绝，
+// 绝不因为"池里没有密钥"就放行。
+//
+// 旧行为（空列表直接 next）等于把一台漏建密钥的实例对整个网络敞开：任何人只要
+// 知道地址就能白嫖账号额度，且日志里看不出异常（请求都算成功）。密钥只能在面板
+// 「AI 密钥」视图创建，而那需要先过管理密码会话，因此 fail closed 不会把运维锁死
+// ——首次部署的正确顺序是「设管理密码 → 建一个密钥 → 再对外开端口」。
 func (h *Handler) withAPIKey(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		keys := h.loadLive().APIKeys
 		if len(keys) == 0 {
-			next(w, r)
+			writeOpenAIError(w, http.StatusUnauthorized, "invalid_api_key",
+				"no API key configured: create one in the WebUI AI keys view")
 			return
 		}
 		token, ok := httpauth.BearerToken(r)
