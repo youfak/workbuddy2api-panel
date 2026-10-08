@@ -312,8 +312,15 @@ label.fld > .hint { display: block; font-size: 11.5px; color: var(--ink-3); marg
 .rate-limit.model-unavailable { border-color: var(--line); background: var(--surface-2); color: var(--ink-3); }
 .rate-limit b { color: var(--ink); font-family: var(--mono); font-weight: 600; }
 .rate-limit span { color: var(--ink-2); }
-.acts { display: flex; gap: 5px; justify-content: flex-end; white-space: nowrap; }
-.acts button { padding: 3.5px 8px; font-size: 12.5px; white-space: nowrap; flex: none; }
+.acts { display: flex; gap: 4px; align-items: center; justify-content: flex-end; white-space: nowrap; }
+.acts button { padding: 3px 7px; font-size: 12px; white-space: nowrap; flex: none; }
+.acts button.icon-btn {
+  padding: 0; width: 26px; height: 26px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 6px;
+}
+.acts button.icon-btn svg { width: 13px; height: 13px; flex: none; }
+.acts button.icon-btn.on { background: var(--accent-soft); color: var(--accent); border-color: color-mix(in srgb, var(--accent) 30%, transparent); }
 
 .acc th.col-cb, .acc td.col-cb { width: 34px; min-width: 34px; max-width: 34px; text-align: center; padding: 0 0 0 10px; }
 .acc th.col-cb input, .acc td.col-cb input { cursor: pointer; margin: 0; width: 14px; height: 14px; }
@@ -754,22 +761,13 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
         <div class="stat"><div class="v" id="sSticky">-</div><div class="k">粘性会话</div></div>
       </div>
 
-      <div class="box" id="expBox" hidden>
-        <header>
-          <h3>积分到期提醒<span class="hint">按最近到期批次估算 · 日均需耗 = 批次剩余 ÷ 距到期天数 · 上游按失效时刻先后自动优先扣减（FEFO）</span></h3>
-          <span class="grow"></span>
-          <span class="note" id="expNote"></span>
-          <button class="xs" id="btnExp">检查</button>
-        </header>
-        <div class="pad"><div id="expList"></div></div>
-      </div>
-
       <div class="box">
         <header>
           <h3>账号池</h3>
           <span class="grow"></span>
           <span class="note" id="accNote"></span>
           <span class="note" id="accCountInfo" style="margin-right:4px"></span>
+          <button class="xs ghost" id="btnOpenExpModal" title="查看账号积分到期检测与预警">🔔 到期提醒<span class="tag warn" id="expCountBadge" style="margin-left:4px;padding:0 5px;font-size:10.5px" hidden>0</span></button>
           <button class="xs primary" id="btnBalanceAll" title="并发查询上游最新积分与额度并同步昵称">全量刷新余额</button>
           <button class="xs" id="btnCheckinAll">全部签到</button>
           <button class="xs" id="btnKeepaliveAll">全部保活</button>
@@ -1492,6 +1490,24 @@ legend { font-size: 12px; color: var(--ink-3); font-weight: 600; padding-bottom:
     <footer>
       <button id="btnCopyAIKey" hidden>复制密钥</button><span class="grow"></span>
       <button class="primary" id="btnCreateAIKey">创建</button><button id="btnCloseAIKey">关闭</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 积分到期提醒 弹窗 -->
+<div class="veil" id="expVeil">
+  <div class="dlg" id="expBox" style="width:720px">
+    <header>
+      <h3>积分到期提醒 <span class="hint">按最近到期批次估算 · 日均需耗 = 批次剩余 ÷ 距到期天数 · 上游按失效时刻先后自动优先扣减（FEFO）</span></h3>
+    </header>
+    <div class="body">
+      <div id="expList"></div>
+    </div>
+    <footer>
+      <span class="hint" id="expNote"></span>
+      <span class="grow"></span>
+      <button class="xs" id="btnExp">重新检查</button>
+      <button class="xs primary" id="btnCloseExp">关闭</button>
     </footer>
   </div>
 </div>

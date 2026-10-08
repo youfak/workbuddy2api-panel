@@ -737,45 +737,74 @@ function renderAccounts(list) {
     const isSelected = accSelectedUIDs.has(s.uid);
     const isExpanded = accExpandedUIDs.has(s.uid);
 
-    let html = '<tr class="' + cls + (isSelected ? ' row-selected' : '') + '" title="uid: ' + esc(s.uid) + '">' +
-      '<td class="col-cb"><input type="checkbox" class="acc-cb" data-u="' + esc(s.uid) + '"' + (isSelected ? ' checked' : '') + ' aria-label="选择账号"></td>' +
-      '<td class="mark" aria-hidden="true"><i></i></td>' +
-      '<td class="who">' +
-        '<div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') +
-          (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') +
-          (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') +
-        '</div>' +
-        '<div class="id">' +
-          esc(short) +
-          '<button class="btn-copy-uid" data-a="copy-uid" data-u="' + esc(s.uid) + '" title="复制完整 UID">' +
-            '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5h8"/></svg>' +
+      let expiryTag = '';
+      if (s.credits_earliest_expiry && !s.credits_earliest_expiry.startsWith('0001-')) {
+        const expMs = parseAPITime(s.credits_earliest_expiry);
+        if (expMs > 0) {
+          const days = Math.round((expMs - Date.now()) / 86400000);
+          if (days >= 0 && days <= 7) {
+            const dayWord = days === 0 ? '今日到期' : days === 1 ? '明日到期' : days + '天后到期';
+            const remText = s.credits_earliest_remaining != null ? s.credits_earliest_remaining + ' 积分 ' : '';
+            const tip = '最近到期批次：' + remText + dayWord;
+            expiryTag = '<div class="tag warn" style="padding:0 5px;font-size:10px;margin-top:3px;display:inline-block;line-height:1.4" title="' + esc(tip) + '">⚡ ' + dayWord + '</div>';
+          }
+        }
+      }
+
+      let html = '<tr class="' + cls + (isSelected ? ' row-selected' : '') + '" title="uid: ' + esc(s.uid) + '">' +
+        '<td class="col-cb"><input type="checkbox" class="acc-cb" data-u="' + esc(s.uid) + '"' + (isSelected ? ' checked' : '') + ' aria-label="选择账号"></td>' +
+        '<td class="mark" aria-hidden="true"><i></i></td>' +
+        '<td class="who">' +
+          '<div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') +
+            (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') +
+            (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') +
+          '</div>' +
+          '<div class="id">' +
+            esc(short) +
+            '<button class="btn-copy-uid" data-a="copy-uid" data-u="' + esc(s.uid) + '" title="复制完整 UID">' +
+              '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5h8"/></svg>' +
+            '</button>' +
+          '</div>' +
+        '</td>' +
+        '<td>' + tag + note + rlmBadge + '</td>' +
+        '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar ' + barColorCls + '"><i style="width:' + pct + '%"></i></div>' + expiryTag + '</td>' +
+        '<td class="num" title="' + esc(succTitle) + '">' + succ + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + errTot + '</span></td>' +
+        '<td class="num">' + (s.in_flight ? '<span class="inflight-tag">' + s.in_flight + '</span>' : '0') + '</td>' +
+        '<td class="num usage-cell" title="' + esc(usageTitle) + '"><span class="usage-line" aria-label="' + esc(usageTitle) + '">' +
+          '<span class="usage-item usage-count"><b>' + req + '</b><em>次</em></span>' +
+          '<span class="usage-item usage-total"><b>' + totalTok + '</b>' + totalTokUnit + '</span>' +
+          '<span class="usage-item usage-latency"><b>' + latency + '</b></span>' +
+          '<span class="usage-item usage-rate"><b>' + rate + '</b></span>' +
+        '</span></td>' +
+        '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
+        '<td class="acts">' +
+          (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '" title="解除禁用与冷却状态">解冻</button>'
+                  : (s.paused ? '<button class="xs primary" data-a="resume" data-u="' + esc(s.uid) + '" title="恢复参与选号">恢复</button>'
+                              : (s.enterprise ? ''
+                                              : (s.checkin_done ? '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '" title="今日已签到；点击可重新签到并刷新余额" style="color:var(--ok)">已签</button>'
+                                                                : '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '" title="立即打卡签到并刷新余额">签到</button>')))) +
+          '<button class="xs ghost icon-btn" data-a="balance" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '刷新企业额度' : '刷新余额') + '">' +
+            '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M13.5 8A5.5 5.5 0 1 1 8 2.5c2 0 3.8 1 4.8 2.6"/><path d="M13.5 2.5V6H10"/></svg>' +
           '</button>' +
-        '</div>' +
-      '</td>' +
-      '<td>' + tag + note + rlmBadge + '</td>' +
-      '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar ' + barColorCls + '"><i style="width:' + pct + '%"></i></div></td>' +
-      '<td class="num" title="' + esc(succTitle) + '">' + succ + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + errTot + '</span></td>' +
-      '<td class="num">' + (s.in_flight ? '<span class="inflight-tag">' + s.in_flight + '</span>' : '0') + '</td>' +
-      '<td class="num usage-cell" title="' + esc(usageTitle) + '"><span class="usage-line" aria-label="' + esc(usageTitle) + '">' +
-        '<span class="usage-item usage-count"><b>' + req + '</b><em>次</em></span>' +
-        '<span class="usage-item usage-total"><b>' + totalTok + '</b>' + totalTokUnit + '</span>' +
-        '<span class="usage-item usage-latency"><b>' + latency + '</b></span>' +
-        '<span class="usage-item usage-rate"><b>' + rate + '</b></span>' +
-      '</span></td>' +
-      '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
-      '<td class="acts">' +
-        (s.enterprise ? '' :
-          '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '"' + (s.checkin_done ? ' title="今日已签到；点击可重新签到并刷新余额"' : '') + '>' + (s.checkin_done ? '已签' : '签到') + '</button>') +
-        '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '"' + (s.enterprise ? ' title="刷新企业版已分配额度（上游 get-enterprise-user-usage）"' : '') + '>' + (s.enterprise ? '额度' : '余额') + '</button>' +
-        (s.enterprise ? '' :
-          '<button class="xs ghost" data-a="tasks" data-u="' + esc(s.uid) + '">任务</button>') +
-        (frozen ? '<button class="xs primary" data-a="revive" data-u="' + esc(s.uid) + '">解冻</button>'
-                : (s.paused ? '<button class="xs primary" data-a="resume" data-u="' + esc(s.uid) + '">恢复选号</button>'
-                            : '<button class="xs ghost" data-a="pause" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额') + '">暂停选号</button>')) +
-        (s.disabled ? '' : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
-        '<button class="xs ghost" data-a="toggle-detail" data-u="' + esc(s.uid) + '" title="展开/收起账号详情明细">' + (isExpanded ? '收起 ▴' : '详情 ▾') + '</button>' +
-        '<button class="xs ghost danger" data-a="remove" data-u="' + esc(s.uid) + '">移除</button>' +
-      '</td></tr>';
+          (s.enterprise ? '' :
+            '<button class="xs ghost icon-btn" data-a="tasks" data-u="' + esc(s.uid) + '" title="成长任务清单">' +
+              '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M2.5 3.5h11M2.5 8h11M2.5 12.5h6"/><path d="M10.5 12l1.8 1.8 3.2-3.2"/></svg>' +
+            '</button>') +
+          (s.disabled || frozen || s.paused ? '' :
+            '<button class="xs ghost icon-btn" data-a="pause" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额') + '">' +
+              '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="4" y="3.5" width="2.6" height="9" rx="0.8"/><rect x="9.4" y="3.5" width="2.6" height="9" rx="0.8"/></svg>' +
+            '</button>') +
+          (s.disabled ? '' :
+            '<button class="xs ghost icon-btn" data-a="disable" data-u="' + esc(s.uid) + '" title="禁用该账号（停止选号与保号）">' +
+              '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5.5"/><path d="M4.1 4.1l7.8 7.8"/></svg>' +
+            '</button>') +
+          '<button class="xs ghost icon-btn' + (isExpanded ? ' on' : '') + '" data-a="toggle-detail" data-u="' + esc(s.uid) + '" title="' + (isExpanded ? '收起详情明细' : '展开详情明细') + '">' +
+            '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="' + (isExpanded ? 'M4 10l4-4 4 4' : 'M4 6l4 4 4-4') + '"/></svg>' +
+          '</button>' +
+          '<button class="xs ghost danger icon-btn" data-a="remove" data-u="' + esc(s.uid) + '" title="移除账号（删除凭证文件）">' +
+            '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 4.5h10M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5M5 6.5v6a1 1 0 0 0 1 1h4a1 1 0 0 0 1-1v-6"/></svg>' +
+          '</button>' +
+        '</td></tr>';
 
     if (isExpanded) {
       html += renderAccountDetailRow(s);
@@ -1070,6 +1099,23 @@ $('btnActivityAll').onclick = async () => {
   try { await api('activity_all', { method: 'POST' }); toast('活跃上报已开始，结果见日志', 'ok'); }
   catch (e) { toast(e.message, 'err'); }
 };
+
+if ($('btnOpenExpModal')) {
+  $('btnOpenExpModal').onclick = () => {
+    if ($('expVeil')) $('expVeil').classList.add('on');
+    loadExpiry(false);
+  };
+}
+if ($('btnCloseExp')) {
+  $('btnCloseExp').onclick = () => {
+    if ($('expVeil')) $('expVeil').classList.remove('on');
+  };
+}
+if ($('expVeil')) {
+  $('expVeil').addEventListener('click', e => {
+    if (e.target === $('expVeil')) $('expVeil').classList.remove('on');
+  });
+}
 
 /* ── 模型 ─────────────────────────────────────────────────────────── */
 /* 实测上限标注：scripts/probe_max_tokens.py --panel-out 写入探测结果，
@@ -3525,6 +3571,22 @@ function renderExpiry(d) {
     ? list.length + ' 个账号 · ' + ageMin + ' 分钟前的数据，可点「检查」刷新'
     : list.length + ' 个账号 · 实时查询上游';
   $('expBox').hidden = false;
+  let expiringCount = 0;
+  keyed.forEach(({ a }) => {
+    if (!a.error) {
+      const bs = expBatches(a.packages).filter(b => expDaysLeft(b.date, today) >= 0 && expDaysLeft(b.date, today) <= 7);
+      if (bs.length) expiringCount++;
+    }
+  });
+  const badge = $('expCountBadge');
+  if (badge) {
+    if (expiringCount > 0) {
+      badge.textContent = expiringCount;
+      badge.hidden = false;
+    } else {
+      badge.hidden = true;
+    }
+  }
 }
 
 async function loadExpiry(force) {
