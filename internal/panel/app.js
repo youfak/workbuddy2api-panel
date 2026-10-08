@@ -8,6 +8,10 @@ let logPin = true, loginState = null, loginTimer = null;
 let phoneLoginSession = null, phoneCodeTimer = null;
 let refTimer = null;
 /* 视图级筛选状态（模块级声明放在文件顶部，避免顶层 go() 早于声明执行时踩 TDZ）。 */
+let accFilter = { q: '', status: 'all', realm: 'all', sort: 'default' };
+let lastAccountsList = [];
+let accSelectedUIDs = new Set();
+let accExpandedUIDs = new Set();
 let mdFilter = { q: '', realm: '', cap: '', effort: '', promo: '', sort: 'default' };
 let mdAll = [], mdProbes = {}, mdProbeOf = () => undefined;
 let reqFilter = { q: '', outcome: '' };
@@ -405,15 +409,260 @@ setTimeout(() => {
 }, 0);
 
 /* ── 账号池 ───────────────────────────────────────────────────────── */
+function matchesAccFilter(s, q, status, realm) {
+  const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
+  const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
+  const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
+
+  if (status === 'healthy') {
+    if (s.disabled || s.paused || cool > 0) return false;
+  } else if (status === 'cooling') {
+    if (s.disabled || s.paused || cool <= 0) return false;
+  } else if (status === 'paused') {
+    if (!s.paused || s.disabled) return false;
+  } else if (status === 'disabled') {
+    if (!s.disabled) return false;
+  }
+
+  if (realm === 'cn') {
+    if (s.realm === 'global' || s.enterprise) return false;
+  } else if (realm === 'global') {
+    if (s.realm !== 'global') return false;
+  } else if (realm === 'enterprise') {
+    if (!s.enterprise) return false;
+  }
+
+  if (q) {
+    const qLower = q.toLowerCase();
+    const matchNick = (s.nickname || '').toLowerCase().includes(qLower);
+    const matchUid = (s.uid || '').toLowerCase().includes(qLower);
+    const matchReason = (s.reason || '').toLowerCase().includes(qLower);
+    const matchDisReason = (s.disabled_reason || '').toLowerCase().includes(qLower);
+    const matchRealm = (s.realm || '').toLowerCase().includes(qLower);
+    const matchModelLock = (s.rate_limited_models || []).some(m => (m && m.model ? m.model.toLowerCase().includes(qLower) : false));
+    if (!matchNick && !matchUid && !matchReason && !matchDisReason && !matchRealm && !matchModelLock) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function sortAccounts(list, sort) {
+  const arr = list.slice();
+  if (sort === 'credits_desc') {
+    return arr.sort((a, b) => (b.credits || 0) - (a.credits || 0));
+  }
+  if (sort === 'credits_asc') {
+    return arr.sort((a, b) => (a.credits || 0) - (b.credits || 0));
+  }
+  if (sort === 'requests_desc') {
+    return arr.sort((a, b) => ((b.token_usage && b.token_usage.request_count) || 0) - ((a.token_usage && a.token_usage.request_count) || 0));
+  }
+  if (sort === 'tokens_desc') {
+    return arr.sort((a, b) => ((b.token_usage && b.token_usage.total_tokens) || 0) - ((a.token_usage && a.token_usage.total_tokens) || 0));
+  }
+  if (sort === 'errors_desc') {
+    return arr.sort((a, b) => (b.err_total || 0) - (a.err_total || 0));
+  }
+  if (sort === 'last_success') {
+    return arr.sort((a, b) => (parseAPITime(b.last_success) || 0) - (parseAPITime(a.last_success) || 0));
+  }
+  if (sort === 'name') {
+    return arr.sort((a, b) => (a.nickname || a.uid).localeCompare(b.nickname || b.uid));
+  }
+  // 默认排序：可用优先 > 冷却 > 暂停 > 禁用，同级内按剩余积分从高到低
+  const rank = s => {
+    const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
+    const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
+    const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
+    if (s.disabled) return 4;
+    if (s.paused) return 3;
+    if (cool > 0) return 2;
+    return 1;
+  };
+  return arr.sort((a, b) => {
+    const ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
+    const ca = a.credits_total === -1 ? 999999999 : (a.credits || 0);
+    const cb = b.credits_total === -1 ? 999999999 : (b.credits || 0);
+    if (cb !== ca) return cb - ca;
+    return a.uid.localeCompare(b.uid);
+  });
+}
+
+function updateAccToolbar(filteredCount, totalCount) {
+  const info = $('accCountInfo');
+  if (info) {
+    if (filteredCount === totalCount) {
+      info.textContent = '共 ' + totalCount + ' 个账号';
+    } else {
+      info.textContent = '筛选出 ' + filteredCount + ' / ' + totalCount + ' 个账号';
+    }
+  }
+
+  const btnReset = $('btnAccResetFilter');
+  if (btnReset) {
+    const hasFilter = Boolean(accFilter.q || accFilter.status !== 'all' || accFilter.realm !== 'all' || accFilter.sort !== 'default');
+    btnReset.hidden = !hasFilter;
+  }
+
+  const statsBar = $('accStatsBar');
+  if (statsBar) {
+    statsBar.querySelectorAll('.stat[data-stat-status]').forEach(el => {
+      const st = el.dataset.statStatus;
+      if (st === accFilter.status) el.classList.add('stat-active');
+      else el.classList.remove('stat-active');
+    });
+  }
+
+  const batchBar = $('accBatchBar');
+  const selCount = $('accSelCount');
+  if (batchBar && selCount) {
+    if (accSelectedUIDs.size > 0) {
+      batchBar.hidden = false;
+      selCount.textContent = String(accSelectedUIDs.size);
+    } else {
+      batchBar.hidden = true;
+      selCount.textContent = '0';
+    }
+  }
+
+  const chkAll = $('accSelectAll');
+  if (chkAll) {
+    const visibleUIDs = lastAccountsList.filter(s => matchesAccFilter(s, accFilter.q, accFilter.status, accFilter.realm)).map(s => s.uid);
+    if (!visibleUIDs.length) {
+      chkAll.checked = false;
+      chkAll.indeterminate = false;
+    } else {
+      const selectedVisibleCount = visibleUIDs.filter(u => accSelectedUIDs.has(u)).length;
+      if (selectedVisibleCount === visibleUIDs.length) {
+        chkAll.checked = true;
+        chkAll.indeterminate = false;
+      } else if (selectedVisibleCount > 0) {
+        chkAll.checked = false;
+        chkAll.indeterminate = true;
+      } else {
+        chkAll.checked = false;
+        chkAll.indeterminate = false;
+      }
+    }
+  }
+}
+
+function resetAccFilter() {
+  accFilter.q = '';
+  accFilter.status = 'all';
+  accFilter.realm = 'all';
+  accFilter.sort = 'default';
+  if ($('accQ')) $('accQ').value = '';
+  if ($('accFilterStatus')) $('accFilterStatus').value = 'all';
+  if ($('accFilterRealm')) $('accFilterRealm').value = 'all';
+  if ($('accSort')) $('accSort').value = 'default';
+  renderAccounts(lastAccountsList);
+}
+
+function renderAccountDetailRow(s) {
+  const tu = s.token_usage || {};
+  const costs = (s.model_costs || []).filter(c => c && c.model);
+  const rlm = Array.isArray(s.rate_limited_models) ? s.rate_limited_models.filter(m => m && m.model) : [];
+
+  let rlmHtml = '<div style="color:var(--ink-3);font-size:12px">暂无模型级限流</div>';
+  if (rlm.length > 0) {
+    rlmHtml = '<div class="rate-limits" style="margin-top:0">' + rlm.map(row => {
+      const m = rateLimitMeta(row, Date.now());
+      return '<div class="rate-limit ' + (m.kind === 'model_unavailable' ? 'model-unavailable' : '') +
+        '" title="' + esc(m.title) + '"><b>' + esc(m.model) + '</b><span>' + esc(m.detail) + '</span></div>';
+    }).join('') + '</div>';
+  }
+
+  let costHtml = '<div style="color:var(--ink-3);font-size:12px">暂无实测成本记录</div>';
+  if (costs.length > 0) {
+    costHtml = '<table class="acc-cost-table"><thead><tr><th>模型</th><th>单价 (credits/1K)</th></tr></thead><tbody>' +
+      costs.map(c => '<tr><td>' + esc(c.model) + '</td><td>' + (c.cost_per_1k <= 0 ? '<span style="color:var(--ok)">免费</span>' : c.cost_per_1k) + '</td></tr>').join('') +
+      '</tbody></table>';
+  }
+
+  const lastUsedStr = tu.last_used_at ? fmtLocalDateTime(parseAPITime(tu.last_used_at)) : (s.last_success ? ago(s.last_success) : '—');
+
+  return '<tr class="acc-detail-tr"><td colspan="10"><div class="acc-detail-pane">' +
+    '<div class="acc-detail-head">' +
+      '<span>完整 UID：</span><span class="uid-full">' + esc(s.uid) + '</span>' +
+      '<button class="xs ghost" data-a="copy-uid" data-u="' + esc(s.uid) + '">复制 UID</button>' +
+      '<span class="grow"></span>' +
+      '<span>区域：<b>' + (s.realm === 'global' ? '国际版 Global' : '国内版 CN') + '</b></span>' +
+      '<span>类型：<b>' + (s.enterprise ? '企业版' : '个人版') + '</b></span>' +
+      '<span>今日签到：<b>' + (s.checkin_done ? '已签到' : '未签到') + '</b></span>' +
+    '</div>' +
+    '<div class="acc-detail-grid">' +
+      '<div class="acc-detail-card">' +
+        '<h4><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="6"/><path d="M8 4v4l2.5 2.5"/></svg> 用量与性能明细</h4>' +
+        '<table class="acc-kv-table"><tbody>' +
+          '<tr><td class="k">总请求数</td><td class="v">' + (tu.request_count || 0) + ' 次</td></tr>' +
+          '<tr><td class="k">总 Token</td><td class="v">' + formatTokenCount(tu.total_tokens) + '</td></tr>' +
+          '<tr><td class="k">输入 Prompt</td><td class="v">' + formatTokenCount(tu.prompt_tokens) + '</td></tr>' +
+          '<tr><td class="k">输出 Complete</td><td class="v">' + formatTokenCount(tu.completion_tokens) + '</td></tr>' +
+          '<tr><td class="k">最近延迟</td><td class="v">' + formatLatency(tu.last_latency_ms) + '</td></tr>' +
+          '<tr><td class="k">生成速度</td><td class="v">' + formatRate(tu.last_tokens_per_second) + '</td></tr>' +
+          '<tr><td class="k">最近模型</td><td class="v">' + (tu.last_model ? esc(tu.last_model) : '—') + '</td></tr>' +
+          '<tr><td class="k">最近活跃</td><td class="v">' + lastUsedStr + '</td></tr>' +
+        '</tbody></table>' +
+      '</div>' +
+      '<div class="acc-detail-card">' +
+        '<h4><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="10" height="8" rx="1.5"/><path d="M5 6V4a3 3 0 0 1 6 0v2"/></svg> 模型限流状态 (' + rlm.length + ')</h4>' +
+        rlmHtml +
+      '</div>' +
+      '<div class="acc-detail-card">' +
+        '<h4><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 13.5h10M4 10l3-5 3 3 3-5"/></svg> 实测模型单价 (' + costs.length + ')</h4>' +
+        costHtml +
+      '</div>' +
+      '<div class="acc-detail-card">' +
+        '<h4><svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M8 2l6 11H2zM8 6v3M8 11h.01"/></svg> 熔断与降权运行态</h4>' +
+        '<table class="acc-kv-table"><tbody>' +
+          '<tr><td class="k">连续失败</td><td class="v">' + (s.consecutive_fails || 0) + ' 次</td></tr>' +
+          '<tr><td class="k">熔断失败</td><td class="v">' + (s.breaker_fails || 0) + ' 次</td></tr>' +
+          '<tr><td class="k">软退避连击</td><td class="v">' + (s.soft_streak || 0) + ' 次</td></tr>' +
+          '<tr><td class="k">降权截至</td><td class="v">' + (s.degrade_until ? fmtLocalDateTime(parseAPITime(s.degrade_until)) : '无') + '</td></tr>' +
+          '<tr><td class="k">熔断截至</td><td class="v">' + (s.breaker_until ? fmtLocalDateTime(parseAPITime(s.breaker_until)) : '无') + '</td></tr>' +
+          '<tr><td class="k">状态原因</td><td class="v">' + esc(s.reason || s.disabled_reason || '正常') + '</td></tr>' +
+        '</tbody></table>' +
+      '</div>' +
+    '</div>' +
+  '</div></td></tr>';
+}
+
 function renderAccounts(list) {
+  lastAccountsList = Array.isArray(list) ? list : [];
   const tb = $('accBody');
-  if (!list.length) {
-    tb.innerHTML = '<tr><td colspan="9"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
+  if (!tb) return;
+
+  if (!lastAccountsList.length) {
+    tb.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="big">账号池是空的</div>点击右上角「添加账号」，用浏览器登录一个 WorkBuddy 账号</div></td></tr>';
+    updateAccToolbar(0, 0);
     return;
   }
-  // 有总额度（credits_total）→ 进度条按自身 剩余/总额 百分比；旧数据无总额 → 退回池内最高=100%
-  const maxCred = Math.max(1, ...list.map(s => s.credits || 0));
-  tb.innerHTML = list.map(s => {
+
+  // 清除失效的已选账号
+  const validUIDs = new Set(lastAccountsList.map(s => s.uid));
+  for (const uid of accSelectedUIDs) {
+    if (!validUIDs.has(uid)) accSelectedUIDs.delete(uid);
+  }
+
+  const filtered = lastAccountsList.filter(s => matchesAccFilter(s, accFilter.q, accFilter.status, accFilter.realm));
+  const sorted = sortAccounts(filtered, accFilter.sort);
+
+  updateAccToolbar(sorted.length, lastAccountsList.length);
+
+  if (!sorted.length) {
+    tb.innerHTML = '<tr><td colspan="10"><div class="empty"><div class="big">无匹配账号</div>没有符合当前筛选或搜索条件的账号<div style="margin-top:10px"><button class="xs" id="btnAccEmptyClear">清除筛选条件</button></div></div></td></tr>';
+    const b = $('btnAccEmptyClear');
+    if (b) b.onclick = () => resetAccFilter();
+    return;
+  }
+
+  const maxCred = Math.max(1, ...lastAccountsList.map(s => s.credits || 0));
+
+  tb.innerHTML = sorted.map(s => {
     const bl = (new Date(s.breaker_until || 0) - Date.now()) / 1000;
     const dg = (new Date(s.degrade_until || 0) - Date.now()) / 1000;
     const cool = Math.max(s.cool_remaining_sec || 0, bl > 0 ? bl : 0, dg > 0 ? dg : 0);
@@ -425,12 +674,25 @@ function renderAccounts(list) {
       const kind = bl > Math.max(s.cool_remaining_sec || 0, dg > 0 ? dg : 0) ? '熔断'
         : (dg > (s.cool_remaining_sec || 0) ? '连败降权' : (s.cool_kind === 'hard_credit' ? '积分冷却' : '限流冷却'));
       tag = '<span class="tag warn">' + kind + ' · ' + dur(cool) + '</span>';
-    } else tag = '<span class="tag ok">可用</span>' + (s.in_flight ? '' : '');
+    } else {
+      tag = '<span class="tag ok">可用</span>';
+    }
+
     const note = s.reason ? '<div class="hint" style="font-size:11.5px;color:var(--ink-3);margin-top:3px">' + esc(s.reason) + '</div>' : '';
-    const rateLimits = rateLimitRowsHtml(s.rate_limited_models, Date.now());
+
+    const rlm = Array.isArray(s.rate_limited_models) ? s.rate_limited_models.filter(m => m && m.model) : [];
+    let rlmBadge = '';
+    if (rlm.length > 0) {
+      const tip = rlm.map(m => {
+        const info = rateLimitMeta(m, Date.now());
+        return info.model + ': ' + info.detail;
+      }).join('\n');
+      rlmBadge = '<div class="mlock-chip" data-a="toggle-detail" data-u="' + esc(s.uid) + '" title="' + esc(tip) + '">' +
+        '<svg viewBox="0 0 16 16" width="10" height="10" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="6" width="10" height="8" rx="1.5"/><path d="M5 6V4a3 3 0 0 1 6 0v2"/></svg>' +
+        rlm.length + ' 个模型受限</div>';
+    }
+
     const short = s.uid.length > 16 ? s.uid.slice(0, 16) + '…' : s.uid;
-    // 企业版不限量：上游 limitNum == -1，网关以 credits_total=-1 透出（见 upstream
-    // enterpriseUnlimitedTotal）。此时剩余额度不参与展示，直接标「不限」。
     const unlimited = s.credits_total === -1;
     const cred = unlimited ? '不限'
       : (s.credits == null ? '—' : (s.credits_total > 0 ? s.credits + '<span class="of">/' + s.credits_total + '</span>' : String(s.credits)));
@@ -438,19 +700,25 @@ function renderAccounts(list) {
       : (s.credits_total > 0
         ? Math.min(100, Math.round((s.credits || 0) / s.credits_total * 100))
         : Math.round((s.credits || 0) / maxCred * 100));
-    // 成本台账 tooltip（model_costs）：每模型实测单价（≤0 = 实测免费），运维据此
-    // 看「为什么总选它」——免费号垄断 / 单价排序一眼可见。
+
+    let barColorCls = 'bar-ok';
+    if (!unlimited) {
+      if (pct <= 10 || (s.credits != null && s.credits <= 0)) barColorCls = 'bar-bad';
+      else if (pct <= 30) barColorCls = 'bar-warn';
+    }
+
     let credTip;
     if (unlimited) credTip = '企业版不限量（上游 limitNum=-1）';
     else if (s.credits_total > 0) {
       credTip = (s.enterprise ? '企业版剩余额度 ' : '剩余 ')
         + s.credits + ' / ' + (s.enterprise ? '分配 ' : '总额 ') + s.credits_total + '（' + pct + '%）';
     } else credTip = '积分（相对池内最高）';
-    const costs = (s.model_costs || []).filter(c => c.model);
+    const costs = (s.model_costs || []).filter(c => c && c.model);
     if (costs.length) {
       credTip += '\n实测单价（credits/1K）：\n' + costs.map(c =>
         '  ' + c.model + '：' + (c.cost_per_1k <= 0 ? '免费' : c.cost_per_1k)).join('\n');
     }
+
     const frozen = s.disabled || cool > 0;
     const tu = s.token_usage || {};
     const req = tu.request_count || 0;
@@ -459,13 +727,35 @@ function renderAccounts(list) {
     const latency = formatLatency(tu.last_latency_ms);
     const rate = formatRate(tu.last_tokens_per_second);
     const usageTitle = '最近一次：' + req + ' 次 / ' + totalTok + ' / 延迟 ' + latency + ' / ' + rate;
-    return '<tr class="' + cls + '" title="uid: ' + esc(s.uid) + '">' +
+
+    const succ = s.success_count || 0;
+    const errTot = s.err_total || 0;
+    const succTotal = succ + errTot;
+    const succRate = succTotal > 0 ? Math.round((succ / succTotal) * 100) + '%' : '100%';
+    const succTitle = '成功率：' + succRate + '（成功 ' + succ + ' 次，失败 ' + errTot + ' 次）';
+
+    const isSelected = accSelectedUIDs.has(s.uid);
+    const isExpanded = accExpandedUIDs.has(s.uid);
+
+    let html = '<tr class="' + cls + (isSelected ? ' row-selected' : '') + '" title="uid: ' + esc(s.uid) + '">' +
+      '<td class="col-cb"><input type="checkbox" class="acc-cb" data-u="' + esc(s.uid) + '"' + (isSelected ? ' checked' : '') + ' aria-label="选择账号"></td>' +
       '<td class="mark" aria-hidden="true"><i></i></td>' +
-      '<td class="who"><div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') + (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') + (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') + '</div><div class="id">' + esc(short) + '</div></td>' +
-      '<td>' + tag + note + rateLimits + '</td>' +
-      '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar"><i style="width:' + pct + '%"></i></div></td>' +
-      '<td class="num">' + (s.success_count || 0) + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + (s.err_total || 0) + '</span></td>' +
-      '<td class="num">' + (s.in_flight || 0) + '</td>' +
+      '<td class="who">' +
+        '<div class="nm">' + (s.nickname ? esc(s.nickname) : '<span style="color:var(--ink-3)">未命名</span>') +
+          (s.realm === 'global' ? ' <span class="realm-tag">国际版</span>' : '') +
+          (s.enterprise ? ' <span class="realm-tag">企业版</span>' : '') +
+        '</div>' +
+        '<div class="id">' +
+          esc(short) +
+          '<button class="btn-copy-uid" data-a="copy-uid" data-u="' + esc(s.uid) + '" title="复制完整 UID">' +
+            '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="8" height="8" rx="1.5"/><path d="M3 11V3a1.5 1.5 0 0 1 1.5-1.5h8"/></svg>' +
+          '</button>' +
+        '</div>' +
+      '</td>' +
+      '<td>' + tag + note + rlmBadge + '</td>' +
+      '<td class="cred" title="' + esc(credTip) + '"><div class="n">' + cred + '</div><div class="bar ' + barColorCls + '"><i style="width:' + pct + '%"></i></div></td>' +
+      '<td class="num" title="' + esc(succTitle) + '">' + succ + ' <span style="color:var(--ink-3)">/</span> <span style="color:var(--bad)">' + errTot + '</span></td>' +
+      '<td class="num">' + (s.in_flight ? '<span class="inflight-tag">' + s.in_flight + '</span>' : '0') + '</td>' +
       '<td class="num usage-cell" title="' + esc(usageTitle) + '"><span class="usage-line" aria-label="' + esc(usageTitle) + '">' +
         '<span class="usage-item usage-count"><b>' + req + '</b><em>次</em></span>' +
         '<span class="usage-item usage-total"><b>' + totalTok + '</b>' + totalTokUnit + '</span>' +
@@ -474,9 +764,6 @@ function renderAccounts(list) {
       '</span></td>' +
       '<td class="num" style="color:var(--ink-3)">' + ago(s.last_success) + '</td>' +
       '<td class="acts">' +
-        // 企业版无个人成长体系（签到 400「企业账号不支持该操作」/ 成长任务 403）：
-        // 不渲染「签到」「任务」按钮，只留「额度」——点它走 /balance，企业额度由
-        // upstream 的 get-enterprise-user-usage 口径填充。
         (s.enterprise ? '' :
           '<button class="xs ghost" data-a="checkin" data-u="' + esc(s.uid) + '"' + (s.checkin_done ? ' title="今日已签到；点击可重新签到并刷新余额"' : '') + '>' + (s.checkin_done ? '已签' : '签到') + '</button>') +
         '<button class="xs ghost" data-a="balance" data-u="' + esc(s.uid) + '"' + (s.enterprise ? ' title="刷新企业版已分配额度（上游 get-enterprise-user-usage）"' : '') + '>' + (s.enterprise ? '额度' : '余额') + '</button>' +
@@ -486,8 +773,14 @@ function renderAccounts(list) {
                 : (s.paused ? '<button class="xs primary" data-a="resume" data-u="' + esc(s.uid) + '">恢复选号</button>'
                             : '<button class="xs ghost" data-a="pause" data-u="' + esc(s.uid) + '" title="' + (s.enterprise ? '退出选号，但照常保活 / 刷新额度' : '退出选号，但照常签到 / 活跃上报 / 保活 / 刷新余额') + '">暂停选号</button>')) +
         (s.disabled ? '' : '<button class="xs ghost" data-a="disable" data-u="' + esc(s.uid) + '">禁用</button>') +
+        '<button class="xs ghost" data-a="toggle-detail" data-u="' + esc(s.uid) + '" title="展开/收起账号详情明细">' + (isExpanded ? '收起 ▴' : '详情 ▾') + '</button>' +
         '<button class="xs ghost danger" data-a="remove" data-u="' + esc(s.uid) + '">移除</button>' +
       '</td></tr>';
+
+    if (isExpanded) {
+      html += renderAccountDetailRow(s);
+    }
+    return html;
   }).join('');
 }
 
@@ -555,10 +848,95 @@ async function loadOverview(quiet) {
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
+if ($('accQ')) {
+  $('accQ').addEventListener('input', e => {
+    accFilter.q = e.target.value.trim();
+    renderAccounts(lastAccountsList);
+  });
+}
+if ($('accFilterStatus')) {
+  $('accFilterStatus').addEventListener('change', e => {
+    accFilter.status = e.target.value;
+    renderAccounts(lastAccountsList);
+  });
+}
+if ($('accFilterRealm')) {
+  $('accFilterRealm').addEventListener('change', e => {
+    accFilter.realm = e.target.value;
+    renderAccounts(lastAccountsList);
+  });
+}
+if ($('accSort')) {
+  $('accSort').addEventListener('change', e => {
+    accFilter.sort = e.target.value;
+    renderAccounts(lastAccountsList);
+  });
+}
+if ($('btnAccResetFilter')) {
+  $('btnAccResetFilter').addEventListener('click', resetAccFilter);
+}
+
+if ($('accStatsBar')) {
+  $('accStatsBar').addEventListener('click', e => {
+    const card = e.target.closest('.stat[data-stat-status]');
+    if (!card) return;
+    const targetStatus = card.dataset.statStatus;
+    if (accFilter.status === targetStatus && targetStatus !== 'all') {
+      accFilter.status = 'all';
+    } else {
+      accFilter.status = targetStatus;
+    }
+    if ($('accFilterStatus')) $('accFilterStatus').value = accFilter.status;
+    renderAccounts(lastAccountsList);
+  });
+}
+
+if ($('accSelectAll')) {
+  $('accSelectAll').addEventListener('change', e => {
+    const visibleUIDs = lastAccountsList.filter(s => matchesAccFilter(s, accFilter.q, accFilter.status, accFilter.realm)).map(s => s.uid);
+    if (e.target.checked) {
+      for (const u of visibleUIDs) accSelectedUIDs.add(u);
+    } else {
+      for (const u of visibleUIDs) accSelectedUIDs.delete(u);
+    }
+    renderAccounts(lastAccountsList);
+  });
+}
+
+$('accBody').addEventListener('change', e => {
+  const cb = e.target.closest('.acc-cb');
+  if (!cb) return;
+  const u = cb.dataset.u;
+  if (cb.checked) accSelectedUIDs.add(u);
+  else accSelectedUIDs.delete(u);
+  const visible = lastAccountsList.filter(s => matchesAccFilter(s, accFilter.q, accFilter.status, accFilter.realm));
+  updateAccToolbar(visible.length, lastAccountsList.length);
+  const tr = cb.closest('tr');
+  if (tr) {
+    if (cb.checked) tr.classList.add('row-selected');
+    else tr.classList.remove('row-selected');
+  }
+});
+
 $('accBody').addEventListener('click', async ev => {
   const b = ev.target.closest('button[data-a]');
   if (!b) return;
   const u = b.dataset.u, a = b.dataset.a;
+  if (a === 'copy-uid') {
+    try {
+      await copyText(u);
+      toast('已复制 UID：' + u, 'ok');
+    } catch {
+      toast('复制失败，请手动复制', 'err');
+    }
+    return;
+  }
+  if (a === 'toggle-detail') {
+    if (accExpandedUIDs.has(u)) accExpandedUIDs.delete(u);
+    else accExpandedUIDs.add(u);
+    renderAccounts(lastAccountsList);
+    return;
+  }
   if (a === 'remove' && !confirm('移除账号将删除池状态与 auths/ 下的凭证文件，且不可恢复。确认移除？')) return;
   if (a === 'disable' && !confirm('禁用后该账号不再参与选号（保号任务默认也跳过），需手动解冻才能恢复。若只是想临时让位、仍要保号，请改用「暂停选号」。确认禁用？')) return;
   b.disabled = true;
@@ -585,11 +963,96 @@ $('accBody').addEventListener('click', async ev => {
       openTasks(u);
     } else if (a === 'remove') {
       const r = await api('accounts/' + encodeURIComponent(u) + '/remove', { method: 'POST' });
+      accSelectedUIDs.delete(u);
+      accExpandedUIDs.delete(u);
       toast(r.file_error ? '已移除（凭证文件删除失败：' + r.file_error + '）' : '已移除', 'ok');
     }
   } catch (e) { toast(e.message, 'err'); }
   finally { b.disabled = false; loadOverview(true); }
 });
+
+async function runBatchAction(name, actionFn) {
+  const uids = Array.from(accSelectedUIDs);
+  if (!uids.length) return;
+  toast('开始批量' + name + '（' + uids.length + ' 个账号）...', 'info');
+  let okCount = 0, failCount = 0;
+  const results = await Promise.allSettled(uids.map(u => actionFn(u)));
+  for (const res of results) {
+    if (res.status === 'fulfilled') okCount++;
+    else failCount++;
+  }
+  toast('批量' + name + '完成：成功 ' + okCount + ' 个' + (failCount > 0 ? '，失败 ' + failCount + ' 个' : ''), failCount ? 'warn' : 'ok');
+  await loadOverview(true);
+}
+
+if ($('btnBatchBalance')) {
+  $('btnBatchBalance').onclick = () => runBatchAction('刷新余额', u => api('accounts/' + encodeURIComponent(u) + '/balance', { method: 'POST' }));
+}
+if ($('btnBatchCheckin')) {
+  $('btnBatchCheckin').onclick = () => {
+    const list = lastAccountsList.filter(s => accSelectedUIDs.has(s.uid) && !s.enterprise);
+    if (!list.length) {
+      toast('选中的账号中没有个人版账号（企业版不支持签到）', 'warn');
+      return;
+    }
+    runBatchAction('签到', u => api('accounts/' + encodeURIComponent(u) + '/checkin', { method: 'POST' }));
+  };
+}
+if ($('btnBatchRevive')) {
+  $('btnBatchRevive').onclick = () => runBatchAction('解冻', u => api('accounts/' + encodeURIComponent(u) + '/revive', { method: 'POST' }));
+}
+if ($('btnBatchPause')) {
+  $('btnBatchPause').onclick = () => runBatchAction('暂停选号', u => api('accounts/' + encodeURIComponent(u) + '/pause', { method: 'POST' }));
+}
+if ($('btnBatchResume')) {
+  $('btnBatchResume').onclick = () => runBatchAction('恢复选号', u => api('accounts/' + encodeURIComponent(u) + '/resume', { method: 'POST' }));
+}
+if ($('btnBatchDisable')) {
+  $('btnBatchDisable').onclick = () => {
+    if (!confirm('确认批量禁用选中的 ' + accSelectedUIDs.size + ' 个账号？禁用后将停止参与选号。')) return;
+    runBatchAction('禁用', u => api('accounts/' + encodeURIComponent(u) + '/disable', { method: 'POST' }));
+  };
+}
+if ($('btnBatchRemove')) {
+  $('btnBatchRemove').onclick = async () => {
+    if (!confirm('确认批量移除选中的 ' + accSelectedUIDs.size + ' 个账号？将删除池状态及对应凭证文件且不可恢复！')) return;
+    const uids = Array.from(accSelectedUIDs);
+    let okCount = 0, failCount = 0;
+    const results = await Promise.allSettled(uids.map(u => api('accounts/' + encodeURIComponent(u) + '/remove', { method: 'POST' })));
+    for (let i = 0; i < results.length; i++) {
+      if (results[i].status === 'fulfilled') {
+        okCount++;
+        accSelectedUIDs.delete(uids[i]);
+        accExpandedUIDs.delete(uids[i]);
+      } else failCount++;
+    }
+    toast('批量移除完成：成功 ' + okCount + ' 个' + (failCount > 0 ? '，失败 ' + failCount + ' 个' : ''), failCount ? 'warn' : 'ok');
+    await loadOverview(true);
+  };
+}
+if ($('btnBatchClear')) {
+  $('btnBatchClear').onclick = () => {
+    accSelectedUIDs.clear();
+    renderAccounts(lastAccountsList);
+  };
+}
+
+if ($('btnBalanceAll')) {
+  $('btnBalanceAll').onclick = async () => {
+    const btn = $('btnBalanceAll');
+    btn.disabled = true;
+    try {
+      toast('正在全量刷新余额与同步昵称...', 'info');
+      await api('balance_all', { method: 'POST' });
+      toast('全量余额刷新完成', 'ok');
+      await loadOverview(true);
+    } catch (e) {
+      toast(e.message, 'err');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+}
 
 $('btnCheckinAll').onclick = async () => {
   try { await api('checkin_all', { method: 'POST' }); toast('全部签到已开始，结果见日志', 'ok'); }
