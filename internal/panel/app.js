@@ -393,7 +393,7 @@ function go(v) {
   if (v === 'logs') loadLogs();
   if (v === 'usage') loadUsage();
   if (v === 'packages') loadPackages();
-  if (v === 'accounts') loadExpiry();
+  // 到期提醒使用 overview 快照；逐包明细由弹窗中的检查按钮显式拉取。
   if (v === 'taskscenter') reattachQueueView();
 }
 document.querySelectorAll('.nav a').forEach(a => a.onclick = e => { e.preventDefault(); go(a.dataset.view); history.replaceState(null, '', '#' + a.dataset.view); });
@@ -874,6 +874,7 @@ async function loadOverview(quiet) {
     $('subMeta').textContent = '运行 ' + (up >= 86400 ? Math.floor(up / 86400) + ' 天 ' : '') + Math.floor(up % 86400 / 3600) + ' 时 ' + Math.floor(up % 3600 / 60) + ' 分';
     renderAccounts(d.accounts || []);
     renderModelLocks(d.model_locks);
+    if ($('expBox') && !lastPackages) renderExpirySnapshot(d);
   } catch (e) { if (!quiet) toast(e.message, 'err'); }
 }
 
@@ -3460,7 +3461,15 @@ if ($('pkSort')) {
   };
 }
 
-async function loadPackages() {
+async function loadPackages(force) {
+  if (!force && lastPackages) {
+    renderPackages(lastPackages, lastDetailLimit);
+    const ageMin = Math.floor((Date.now() - lastPackagesAt) / 60000);
+    if (ageMin > 0 && $('pkNote')) {
+      $('pkNote').textContent = lastPackages.accounts.length + ' 个账号 · ' + ageMin + ' 分钟前的数据，点「刷新」更新';
+    }
+    return;
+  }
   $('pkSummary').innerHTML = '<div class="empty">查询中…（逐账号向上游实时查询）</div>';
   $('pkDetail').innerHTML = '';
   $('pkExpiry').innerHTML = '<div class="pk-expiry-empty">查询中…</div>';
@@ -3589,6 +3598,49 @@ function renderExpiry(d) {
   }
 }
 
+// 快照版到期提醒：复用 /overview 中的本地状态，不额外请求上游。
+function renderExpirySnapshot(d) {
+  const list = (d && d.accounts) || [];
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const keyed = list.map(a => {
+    let key = null, ms = 0;
+    if (a.credits_earliest_expiry) {
+      const t = new Date(a.credits_earliest_expiry);
+      if (!isNaN(t.getTime())) { ms = t.getTime(); key = ms; }
+    }
+    return { a, key, ms };
+  });
+  keyed.sort((x, y) => {
+    if (x.key === null && y.key === null) return 0;
+    if (x.key === null) return 1;
+    if (y.key === null) return -1;
+    return x.key - y.key;
+  });
+  const rows = keyed.map(({ a, ms }) => {
+    const nm = esc(a.nickname || String(a.uid || '').slice(0, 8));
+    if (!ms || !a.credits_earliest_remaining) {
+      return '<div class="exp-row"><span class="exp-dot" style="background:var(--ok)"></span>' +
+        '<span class="exp-nm">' + nm + '</span>' +
+        '<span class="exp-main">无近期到期批次</span></div>';
+    }
+    const days = Math.max(0, Math.ceil((ms - today.getTime()) / 86400000));
+    const remain = Number(a.credits_earliest_remaining || 0);
+    const daily = Math.ceil(remain / Math.max(1, days));
+    const cls = days <= 3 ? 'var(--bad)' : days <= 7 ? 'var(--warn)' : 'var(--ok)';
+    const dayWord = days === 0 ? '今天到期' : days === 1 ? '明天到期' : days + ' 天后到期';
+    const when = new Date(ms).toISOString().slice(0, 10);
+    return '<div class="exp-row"><span class="exp-dot" style="background:' + cls + '"></span>' +
+      '<span class="exp-nm">' + nm + '</span>' +
+      '<span class="exp-main">最近到期 <b>' + esc(when) + '</b>（' + dayWord +
+      '）· 该批 <b>' + fmtTok(remain) + '</b> 积分 · 到期前日均需耗 ≥<b>' +
+      fmtTok(daily) + '</b><div class="note">快照数据，点「检查」看全部到期批次</div>' +
+      '</span></div>';
+  }).join('');
+  $('expList').innerHTML = rows || '<div class="empty">没有账号</div>';
+  $('expNote').textContent = list.length + ' 个账号 · 快照（来自本地状态，点「检查」拉实时明细）';
+  $('expBox').hidden = false;
+}
+
 async function loadExpiry(force) {
   if (!$('expBox')) return;
   if (expFetching) return;
@@ -3611,7 +3663,8 @@ async function loadExpiry(force) {
 
 if ($('btnExp')) $('btnExp').onclick = () => loadExpiry(true);
 
-if ($('btnPk')) $('btnPk').onclick = loadPackages;
+// 「刷新」始终实时查（显式 force，不依赖事件对象真值）
+if ($('btnPk')) $('btnPk').onclick = () => loadPackages(true);
 
 /* ── 修改管理密码 ─────────────────────────────────────────────────── */
 if ($('btnOpenChangePwd')) $('btnOpenChangePwd').onclick = () => {

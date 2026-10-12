@@ -513,3 +513,69 @@ func TestCleanupOrphanToolCallsPreservesStandaloneToolMessage(t *testing.T) {
 		t.Fatalf("standalone tool message changed: changed=%v out=%#v", changed, out)
 	}
 }
+
+// TestCleanupOrphanToolCallsEmptyName 防止空 function.name 触发上游 11133。
+func TestCleanupOrphanToolCallsEmptyName(t *testing.T) {
+	t.Run("空name带结果：调用与结果成对剔除，assistant保留", func(t *testing.T) {
+		in := msgs(t, `[
+{"role":"user","content":"q"},
+{"role":"assistant","content":"","tool_calls":[{"id":"c1","type":"function","function":{"name":"","arguments":"{}"}}]},
+{"role":"tool","tool_call_id":"c1","content":"r1"},
+{"role":"user","content":"next"}
+]`)
+		out, changed := cleanupOrphanToolCalls(in)
+		if !changed {
+			t.Fatal("changed=false，期望剔除空 name 调用")
+		}
+		assertSummary(t, summarize(out), []string{"user(-)", "assistant(-)", "user(-)"})
+	})
+
+	t.Run("空name且无结果：仍删除孤儿调用", func(t *testing.T) {
+		in := msgs(t, `[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"","arguments":"{}"}}]},{"role":"user","content":"go"}]`)
+		out, changed := cleanupOrphanToolCalls(in)
+		if !changed {
+			t.Fatal("changed=false，期望删除空 name 孤儿调用")
+		}
+		if _, has := out[0].(map[string]any)["tool_calls"]; has {
+			t.Error("空 name 孤儿调用的 tool_calls 键应被删除")
+		}
+	})
+
+	t.Run("纯空白name判脏", func(t *testing.T) {
+		in := msgs(t, `[{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"   ","arguments":"{}"}}]},{"role":"tool","tool_call_id":"c1","content":"r1"}]`)
+		out, changed := cleanupOrphanToolCalls(in)
+		if !changed {
+			t.Fatal("changed=false，纯空白 name 应与空串同判")
+		}
+		assertSummary(t, summarize(out), []string{"assistant(-)"})
+	})
+
+	t.Run("批内混合：只剔脏项，健康项不动", func(t *testing.T) {
+		in := msgs(t, `[
+{"role":"assistant","content":null,"tool_calls":[
+{"id":"c1","type":"function","function":{"name":"","arguments":"{}"}},
+{"id":"c2","type":"function","function":{"name":"read","arguments":"{}"}}
+]},
+{"role":"tool","tool_call_id":"c1","content":"r1"},
+{"role":"tool","tool_call_id":"c2","content":"r2"}
+]`)
+		out, changed := cleanupOrphanToolCalls(in)
+		if !changed {
+			t.Fatal("changed=false，期望对称裁剪脏项")
+		}
+		assertSummary(t, summarize(out), []string{"assistant(c2)", "tool(c2)"})
+	})
+
+	t.Run("function或name缺失不判脏", func(t *testing.T) {
+		in := msgs(t, `[
+{"role":"assistant","content":null,"tool_calls":[{"id":"c1"},{"id":"c2"}]},
+{"role":"tool","tool_call_id":"c1","content":"r1"},
+{"role":"tool","tool_call_id":"c2","content":"r2"}
+]`)
+		out, changed := cleanupOrphanToolCalls(in)
+		if changed {
+			t.Error("changed=true，缺 function 字段不应判脏")
+		}
+		assertSummary(t, summarize(out), []string{"assistant(c1,c2)", "tool(c1)", "tool(c2)"})
+	})
+}

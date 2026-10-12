@@ -11,6 +11,8 @@
 // 的条目让会话自愈，宁可丢一轮工具上下文，也好过整条会话死亡。
 package upstream
 
+import "strings"
+
 // repackToolResultBlocks 把插在 assistant.tool_calls 与其 tool 结果之间的非 tool 消息
 // 挪到整组之后，保证同一批 tool_call 的结果在 wire 上连续。
 //
@@ -181,6 +183,7 @@ func cleanupOrphanToolCalls(messages []any) ([]any, bool) {
 		// 把「先出现的孤儿结果」或「后续批次的同 ID 结果」错误地认成合法配对。
 		calls := make([]any, 0, len(tcs))
 		callIDs := map[string]bool{}
+		nameBadIDs := map[string]bool{}
 		for _, rawCall := range tcs {
 			call, ok := rawCall.(map[string]any)
 			id, valid := "", false
@@ -193,6 +196,9 @@ func cleanupOrphanToolCalls(messages []any) ([]any, bool) {
 				continue
 			}
 			callIDs[id] = true
+			if toolCallNameEmpty(call) {
+				nameBadIDs[id] = true
+			}
 			calls = append(calls, call)
 		}
 
@@ -246,10 +252,12 @@ func cleanupOrphanToolCalls(messages []any) ([]any, bool) {
 			continue
 		}
 		keptCalls := make([]any, 0, len(calls))
+		keptResultIDs := map[string]bool{}
 		for _, call := range calls {
 			id := call.(map[string]any)["id"].(string)
-			if resultIDs[id] {
+			if resultIDs[id] && !nameBadIDs[id] {
 				keptCalls = append(keptCalls, call)
+				keptResultIDs[id] = true
 			}
 		}
 		if len(keptCalls) != len(tcs) || len(keptCalls) != len(calls) {
@@ -262,7 +270,14 @@ func cleanupOrphanToolCalls(messages []any) ([]any, bool) {
 			msg["tool_calls"] = keptCalls
 		}
 		kept = append(kept, msg)
-		kept = append(kept, results...)
+		for _, result := range results {
+			resultMsg, _ := result.(map[string]any)
+			if id, _ := resultMsg["tool_call_id"].(string); keptResultIDs[id] {
+				kept = append(kept, result)
+			} else {
+				changed = true
+			}
+		}
 		if len(between) > 0 {
 			changed = true
 			kept = append(kept, between...)
@@ -394,4 +409,15 @@ func emptyContent(v any) bool {
 		return len(c) == 0
 	}
 	return false
+}
+
+// toolCallNameEmpty 判断 function.name 是否为空白字符串。
+// 缺少 function 或 name 的历史占位条目不判脏，避免扩大清理范围。
+func toolCallNameEmpty(tc map[string]any) bool {
+	fn, ok := tc["function"].(map[string]any)
+	if !ok {
+		return false
+	}
+	name, ok := fn["name"].(string)
+	return ok && strings.TrimSpace(name) == ""
 }
