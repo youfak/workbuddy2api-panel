@@ -34,6 +34,7 @@ func testV1Handler(cfg Config) *Handler {
 			APIKeys:          []apikey.Record{testV1Record},
 			SoftCooldown:     cfg.SoftCooldown,
 			RecordClientInfo: cfg.RecordClientInfo,
+			HiddenModels:     livecfg.NormalizeHiddenModels(cfg.ModelsHidden),
 		})
 	}
 	return NewHandler(cfg)
